@@ -8,6 +8,7 @@ import { WsHub } from '../server/wsHub.js';
 import { Processor } from '../runtime/processor.js';
 import { buildServer } from '../server/server.js';
 import { rehydrate } from '../runtime/rehydrate.js';
+import { startSaplingParamsServer, type ParamsServer } from '../runtime/saplingParamsServer.js';
 import { startGasRefillLoop } from '../economics/refillScheduler.js';
 import { acquireInstanceLock } from '../runtime/instanceLock.js';
 import { Metrics } from '../observability/metrics.js';
@@ -47,8 +48,21 @@ export async function start(): Promise<void> {
   const alerter = new Alerter(store, cfg, logger);
 
   const secrets = loadPoolSecrets(cfg);
+
+  // Resolve sapling params. Node's fetch() can't read file:// and the SDK's on-disk
+  // fallback uses __filename (undefined under ESM), so unless an http(s) URL is already
+  // configured we serve the bundled params over loopback and point the SDK at it. This
+  // makes proving work in EVERY run mode (relay start / npm start / dev), not just the
+  // Docker entrypoint. (A configured http URL — e.g. Docker's sidecar — is left as-is.)
+  let paramsServer: ParamsServer | undefined;
+  let saplingParamsUrl = cfg.SAPLING_PARAMS_URL;
+  if (!saplingParamsUrl || saplingParamsUrl.startsWith('file:')) {
+    paramsServer = await startSaplingParamsServer(logger);
+    saplingParamsUrl = paramsServer.url;
+  }
+
   logger.info('building worker pool — loading sapling params, may take a moment…');
-  const workers = await buildPool(cfg, secrets);
+  const workers = await buildPool({ ...cfg, SAPLING_PARAMS_URL: saplingParamsUrl }, secrets);
   logger.info(
     { workers: workers.map((w) => ({ index: w.index, tz1: w.tezosAddress })) },
     'worker pool ready',
@@ -89,6 +103,7 @@ export async function start(): Promise<void> {
     try {
       await app.close(); // stop new HTTP + WS
       await queue.drain(); // let in-flight per-worker tasks finish
+      paramsServer?.close();
       lock.release();
       store.close();
     } finally {
