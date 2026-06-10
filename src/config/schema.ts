@@ -33,6 +33,14 @@ export const ConfigSchema = z
 
     PAYMENT_AMOUNT_MUTEZ: z.coerce.bigint().default(1_000_000n),
 
+    // Quantized fee schedule (FEE_SCHEDULE.md). Defaults reproduce the flat fee
+    // EXACTLY (ships dark): base=PAYMENT_AMOUNT (resolved below), perTx=0, quantum=1,
+    // legacy cap off. Operators opt in with the recommended 250k/150k/250k + cap=5.
+    FEE_BASE_MUTEZ: z.coerce.bigint().optional(),
+    FEE_PER_TX_MUTEZ: z.coerce.bigint().nonnegative().default(0n),
+    FEE_QUANTUM_MUTEZ: z.coerce.bigint().positive().default(1n),
+    LEGACY_FLAT_MAX_TXS: z.coerce.number().int().nonnegative().default(0), // 0 = no cap
+
     WORKER_COUNT: z.coerce.number().int().positive().default(1),
     MAX_CONCURRENT_PROOFS: z.coerce.number().int().positive().default(2),
     REQUIRE_JOB_SECRET: bool.default('true'),
@@ -73,6 +81,13 @@ export const ConfigSchema = z
     // Resolve network-derived defaults once.
     rpcUrl: c.TEZOS_RPC_URL ?? DEFAULT_RPC[c.TEZOS_NETWORK],
     factoryContract: c.SHIELD_BRIDGE_CONTRACT ?? DEFAULT_FACTORY[c.TEZOS_NETWORK],
+    // Fee schedule params, grouped. base defaults to the flat amount → dark by default.
+    fee: {
+      baseMutez: c.FEE_BASE_MUTEZ ?? c.PAYMENT_AMOUNT_MUTEZ,
+      perTxMutez: c.FEE_PER_TX_MUTEZ,
+      quantumMutez: c.FEE_QUANTUM_MUTEZ,
+    },
+    legacyFlatMaxTxs: c.LEGACY_FLAT_MAX_TXS,
   }));
 
 export type Config = z.infer<typeof ConfigSchema>;

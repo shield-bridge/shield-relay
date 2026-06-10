@@ -33,7 +33,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   userTxHash        TEXT,
   errorMessage      TEXT,
   createdAt         INTEGER NOT NULL,
-  expiresAt         INTEGER NOT NULL
+  expiresAt         INTEGER NOT NULL,
+  quotedFeeMutez    INTEGER,
+  quotedTxCount     INTEGER,
+  legacyQuote       INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS jobs_expiresAt ON jobs(expiresAt);
 
@@ -100,6 +103,9 @@ export class SqliteStore implements Store {
    *  Fresh installs get the column from the CREATE TABLE above; this is a no-op for them. */
   private migrate(): void {
     this.ensureColumn('work_queue', 'discardedAt', 'INTEGER');
+    this.ensureColumn('jobs', 'quotedFeeMutez', 'INTEGER');
+    this.ensureColumn('jobs', 'quotedTxCount', 'INTEGER');
+    this.ensureColumn('jobs', 'legacyQuote', 'INTEGER NOT NULL DEFAULT 1');
   }
 
   private ensureColumn(table: string, column: string, decl: string): void {
@@ -119,11 +125,13 @@ export class SqliteStore implements Store {
     this.db
       .prepare(
         `INSERT INTO jobs (jobId, status, paymentPoolIndex, broadcastPoolIndex, memo,
-           jobSecretHash, paymentTxHash, userTxHash, errorMessage, createdAt, expiresAt)
+           jobSecretHash, paymentTxHash, userTxHash, errorMessage, createdAt, expiresAt,
+           quotedFeeMutez, quotedTxCount, legacyQuote)
          VALUES (@jobId, 'info_generated', @paymentPoolIndex, @broadcastPoolIndex, @memo,
-           @jobSecretHash, NULL, NULL, NULL, @createdAt, @expiresAt)`,
+           @jobSecretHash, NULL, NULL, NULL, @createdAt, @expiresAt,
+           @quotedFeeMutez, @quotedTxCount, @legacyQuote)`,
       )
-      .run({ ...j, createdAt: now });
+      .run({ ...j, createdAt: now, legacyQuote: j.legacyQuote ? 1 : 0 });
   }
 
   getJob(jobId: string): JobRow | undefined {

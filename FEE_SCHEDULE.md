@@ -1,6 +1,9 @@
 # Fee Schedule — Replacing the Flat 1 XTZ Relay Fee
 
-**Status:** design proposal (not implemented). Companion to `DESIGN.md` (`shield-relay/1`).
+**Status:** relay side IMPLEMENTED (ships dark — `src/core/feeSchedule.ts`, the quote
+at `get-worker-info`, Phase-1 verify against the stored quote, Phase-2 `txCount`
+enforcement). Pending: empirical `perTxMutez` sweep (§6.1) before enabling live, and
+the shield-bridge client adoption (§5.3). Companion to `DESIGN.md` (`shield-relay/1`).
 **Source data:** mainnet operation [`ooRSpM5TDKpr1SEchYaxhJgFQQrzGB1sTZWLZXauMV49kr5AhkZ`](https://tzkt.io/ooRSpM5TDKpr1SEchYaxhJgFQQrzGB1sTZWLZXauMV49kr5AhkZ) — a real 10-asset relay batch (20 contents) that collected the flat 1 XTZ fee.
 
 ---

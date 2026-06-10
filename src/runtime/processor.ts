@@ -12,10 +12,12 @@ import { frame } from '../server/statusFrames.js';
 import { generateJobSecret, generateMemo, hashJobSecret, checkJobSecret } from '../server/auth.js';
 import { broadcastPayment, verifyPaymentMemo } from '../core/payment.js';
 import { injectUserTransaction } from '../core/inject.js';
+import { quoteFee, checkSubmittedTxCount } from '../core/feeSchedule.js';
 import { readCounter, broadcastAlreadyLanded } from './reconcile.js';
 
 const HEX = /^[0-9a-fA-F]+$/;
 const MAX_TXN_HEX = 100_000;
+const MAX_TX_COUNT = 256; // sanity bound on a fee quote request
 
 export interface ProcessorDeps {
   config: Config;
@@ -40,7 +42,8 @@ export class Processor {
   constructor(private readonly d: ProcessorDeps) {}
 
   // ── /get-worker-info ──────────────────────────────────────────────────────
-  getWorkerInfo() {
+  getWorkerInfo(txCountRaw?: unknown) {
+    const txCount = this.parseTxCount(txCountRaw);
     const n = this.d.workers.length;
     const paymentPoolIndex = randomInt(n);
     const broadcastPoolIndex = n > 1 ? (paymentPoolIndex + 1 + randomInt(n - 1)) % n : paymentPoolIndex;
@@ -50,6 +53,11 @@ export class Processor {
     const jobSecret = generateJobSecret();
     const expiresAt = Math.floor(Date.now() / 1000) + this.d.config.JOB_TTL_SECONDS;
 
+    // txCount present → scheduled quote; absent → legacy flat (PAYMENT_AMOUNT). The
+    // quote is BINDING and durable: Phase 1 verifies against it (restart-safe).
+    const quotedFeeMutez =
+      txCount == null ? this.d.config.PAYMENT_AMOUNT_MUTEZ : quoteFee(txCount, this.d.config.fee);
+
     this.d.store.createJob({
       jobId,
       paymentPoolIndex,
@@ -57,6 +65,9 @@ export class Processor {
       memo,
       jobSecretHash: hashJobSecret(jobSecret),
       expiresAt,
+      quotedFeeMutez: Number(quotedFeeMutez),
+      quotedTxCount: txCount ?? null,
+      legacyQuote: txCount == null,
     });
 
     return {
@@ -64,9 +75,24 @@ export class Processor {
       workerIndex: paymentPoolIndex,
       address: this.d.workers[paymentPoolIndex]!.saplingAddress,
       memo,
-      paymentAmount: String(Number(this.d.config.PAYMENT_AMOUNT_MUTEZ) / 1_000_000),
+      paymentAmount: String(Number(quotedFeeMutez) / 1_000_000), // the QUOTED amount
+      quotedTxCount: txCount ?? null,
+      // Lets a schedule-aware client preview fees before building a batch.
+      feeSchedule: {
+        baseMutez: Number(this.d.config.fee.baseMutez),
+        perTxMutez: Number(this.d.config.fee.perTxMutez),
+        quantumMutez: Number(this.d.config.fee.quantumMutez),
+      },
       jobSecret,
     };
+  }
+
+  private parseTxCount(raw: unknown): number | undefined {
+    if (raw === undefined || raw === null) return undefined; // legacy: no quote requested
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1 || raw > MAX_TX_COUNT) {
+      throw new HttpError(400, `Invalid txCount: must be an integer in [1, ${MAX_TX_COUNT}].`);
+    }
+    return raw;
   }
 
   // ── /submit-payment ───────────────────────────────────────────────────────
@@ -107,6 +133,17 @@ export class Processor {
     }
     const arr = Array.isArray(userTransaction) ? userTransaction : [userTransaction];
     for (const t of arr) this.validateTxns(t?.txns);
+
+    // Enforce the paid fee covers the submitted size — BEFORE injection, so a
+    // quote-1-submit-10 dodge is rejected without spending the relay's gas. The
+    // fee was already paid (Phase 1), so a too-low quote forfeits it (FEE_SCHEDULE §3.3).
+    const actualTxCount = arr.reduce((acc, t) => acc + (Array.isArray(t?.txns) ? t.txns.length : 0), 0);
+    const check = checkSubmittedTxCount(
+      actualTxCount,
+      { legacyQuote: Boolean(job.legacyQuote), quotedTxCount: job.quotedTxCount },
+      this.d.config.legacyFlatMaxTxs,
+    );
+    if (!check.ok) throw new HttpError(402, check.reason);
 
     const taskId = randomUUID();
     const seq = this.d.store.enqueueWork(
@@ -173,7 +210,10 @@ export class Processor {
         stopTimer();
       }
 
-      if (!(await verifyPaymentMemo(worker.sdk, job.memo, this.d.config.PAYMENT_AMOUNT_MUTEZ))) {
+      // Verify against the job's BINDING quote (legacy or scheduled). The fallback
+      // covers any pre-fee-schedule job row migrated with a null quote.
+      const expectedMutez = BigInt(job.quotedFeeMutez ?? Number(this.d.config.PAYMENT_AMOUNT_MUTEZ));
+      if (!(await verifyPaymentMemo(worker.sdk, job.memo, expectedMutez))) {
         return this.failPayment(taskId, job.jobId, 'Payment verification failed (memo/amount).');
       }
       // tryConsumeMemo is same-job idempotent → safe to re-run on resume.

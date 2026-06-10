@@ -17,8 +17,13 @@ interface SubmitUserTxBody {
 /** The three `shield-relay/1` REST endpoints. Responses use `{ data }` so the
  *  existing client's `json.data ?? json` parsing works unchanged. */
 export function registerRoutes(app: FastifyInstance, processor: Processor): void {
-  app.post('/get-worker-info', async (_req, reply) => {
-    return reply.send({ success: true, data: processor.getWorkerInfo() });
+  app.post('/get-worker-info', async (req, reply) => {
+    try {
+      const txCount = (req.body as { txCount?: unknown } | undefined)?.txCount;
+      return reply.send({ success: true, data: processor.getWorkerInfo(txCount) });
+    } catch (e) {
+      return sendError(reply, e);
+    }
   });
 
   app.post('/submit-payment', async (req, reply) => {

@@ -35,6 +35,12 @@ export interface JobRow {
   errorMessage: string | null;
   createdAt: number;
   expiresAt: number;
+  /** Binding fee (mutez) Phase 1 must clear. Durable — survives restart. */
+  quotedFeeMutez: number;
+  /** Max sapling txns Phase 2 may submit; null for a legacy flat quote. */
+  quotedTxCount: number | null;
+  /** 1 if quoted the legacy flat fee (no txCount sent); 0 if scheduled. */
+  legacyQuote: number;
 }
 
 export interface WorkRow {
@@ -61,6 +67,9 @@ export interface NewJob {
   memo: string;
   jobSecretHash: string;
   expiresAt: number;
+  quotedFeeMutez: number;
+  quotedTxCount: number | null;
+  legacyQuote: boolean;
 }
 
 export interface NewWork {

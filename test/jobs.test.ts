@@ -30,6 +30,9 @@ function seedFailed(
     memo: `memo-${jobId}`,
     jobSecretHash: 'hash',
     expiresAt: Math.floor(Date.now() / 1000) + 3600,
+    quotedFeeMutez: 1_000_000,
+    quotedTxCount: null,
+    legacyQuote: true,
   });
   // enqueueWork is conditional on the pre-enqueue status; move the job there first.
   const pre: JobStatus = kind === 'inject_user_tx' ? 'payment_confirmed' : 'info_generated';
@@ -126,7 +129,7 @@ describe('dead-letter ops — store layer', () => {
     const store = freshStore();
     // Build a genuine completed inject_user_tx record via completeWork.
     const jobId = 'job-done-1', taskId = 'task-done-1';
-    store.createJob({ jobId, paymentPoolIndex: 0, broadcastPoolIndex: 1, memo: 'm', jobSecretHash: 'h', expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+    store.createJob({ jobId, paymentPoolIndex: 0, broadcastPoolIndex: 1, memo: 'm', jobSecretHash: 'h', expiresAt: Math.floor(Date.now() / 1000) + 3600, quotedFeeMutez: 1_000_000, quotedTxCount: null, legacyQuote: true });
     store.setJobStatus(jobId, 'payment_confirmed');
     store.enqueueWork({ taskId, jobId, poolIndex: 1, kind: 'inject_user_tx', payloadJson: JSON.stringify({ txns: ['aa'] }) }, 'payment_confirmed', 'injecting_user_tx');
     store.setBroadcasting(taskId, 7);
@@ -195,6 +198,21 @@ describe('dead-letter ops — store layer', () => {
     const pool1 = active.find((a) => a.poolIndex === 1);
     expect(pool0).toMatchObject({ queued: 1, running: 0 }); // the inject_payment queued row
     expect(pool1).toMatchObject({ queued: 0, running: 1 }); // the running inject_user_tx
+  });
+
+  it('createJob persists the fee quote; getJob reads it back (scheduled + legacy)', () => {
+    const store = freshStore();
+    const exp = Math.floor(Date.now() / 1000) + 3600;
+    store.createJob({ jobId: 'job-q1', paymentPoolIndex: 0, broadcastPoolIndex: 1, memo: 'm', jobSecretHash: 'h', expiresAt: exp, quotedFeeMutez: 750_000, quotedTxCount: 3, legacyQuote: false });
+    const j1 = store.getJob('job-q1')!;
+    expect(j1.quotedFeeMutez).toBe(750_000);
+    expect(j1.quotedTxCount).toBe(3);
+    expect(j1.legacyQuote).toBe(0);
+
+    store.createJob({ jobId: 'job-q2', paymentPoolIndex: 0, broadcastPoolIndex: 0, memo: 'm2', jobSecretHash: 'h', expiresAt: exp, quotedFeeMutez: 1_000_000, quotedTxCount: null, legacyQuote: true });
+    const j2 = store.getJob('job-q2')!;
+    expect(j2.quotedTxCount).toBeNull();
+    expect(j2.legacyQuote).toBe(1);
   });
 
   it('relayLiveness: the load-bearing offline-gate predicate (none / fresh / stale boundary)', () => {
