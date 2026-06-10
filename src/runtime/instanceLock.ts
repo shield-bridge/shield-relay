@@ -3,7 +3,10 @@ import { randomUUID } from 'node:crypto';
 import type { Store } from '../store/index.js';
 import type { Logger } from '../observability/logger.js';
 
-const STALE_MS = 60_000; // a holder whose heartbeat is older than this is presumed dead
+/** A holder whose heartbeat is older than this is presumed dead. Exported so the
+ *  `relay jobs` CLI uses the SAME liveness threshold the relay uses to reclaim — its
+ *  "is a relay live?" verdict matches what `relay start` would itself conclude. */
+export const STALE_MS = 60_000;
 const HEARTBEAT_MS = 20_000;
 
 export interface InstanceLockHandle {

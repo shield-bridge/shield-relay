@@ -49,6 +49,9 @@ export interface WorkRow {
   opHash: string | null;
   pinnedCounter: number | null;
   attempts: number;
+  /** Operator-discard marker (epoch ms). Non-null ⟹ parked by `relay jobs discard`;
+   *  the row stays terminal-'failed' so it is never rehydrated or executed. */
+  discardedAt: number | null;
 }
 
 export interface NewJob {
@@ -73,6 +76,28 @@ export interface AlertRow {
   payloadJson: string;
   attempts: number;
   nextAttemptAt: number;
+}
+
+/** Read-only view of the single-instance lock (CLI liveness probe). */
+export interface InstanceLockRow {
+  holder: string;
+  heartbeatAt: number;
+}
+
+/** Filter for the ops/dead-letter work listing. Empty filter = all non-discarded rows. */
+export interface WorkFilter {
+  states?: WorkState[];
+  kind?: WorkKind;
+  jobId?: string;
+  includeDiscarded?: boolean;
+  limit?: number;
+}
+
+/** Outcome of a retry/discard mutation. `changed:false` ⟹ a no-op (wrong state / already done). */
+export interface MutationResult {
+  changed: boolean;
+  kind?: WorkKind;
+  jobId?: string;
 }
 
 export interface Store {
@@ -119,6 +144,26 @@ export interface Store {
   tryAcquireInstanceLock(holder: string, staleMs: number): boolean;
   heartbeatInstanceLock(holder: string): void;
   releaseInstanceLock(holder: string): void;
+  /** Read the lock WITHOUT acquiring/heartbeating it — the CLI's "is a relay live?" probe. */
+  getInstanceLock(): InstanceLockRow | undefined;
+
+  // ── dead-letter ops (the `relay jobs` CLI; mutators are offline-only) ─────────
+  /** Filtered work listing (dead-letter view). Ordered (poolIndex, chainSeq). Read-only. */
+  listWork(filter: WorkFilter): WorkRow[];
+  /**
+   * Re-arm a terminal-'failed' work row to 'queued' so the NEXT boot rehydrate resumes it.
+   * Resets job.status to the post-enqueue value for its kind (matches the normal-flow pairing
+   * AND blocks a duplicate re-submit) and clears errorMessage — all in ONE transaction.
+   * LEAVES broadcastState/pinnedCounter/opHash/attempts intact so the boot counter-pin reconcile
+   * can skip a re-broadcast that already landed. NEVER broadcasts. No-op unless state is 'failed'.
+   */
+  retryWork(taskId: string): MutationResult;
+  /**
+   * Park a work row as operator-discarded: force terminal 'failed' + stamp discardedAt, and set
+   * the job to its kind-terminal *_failed with an errorMessage. Additive — NEVER DELETEs a row and
+   * NEVER touches consumed_memos (the credit-once replay guard stays intact). No-op if already discarded.
+   */
+  discardWork(taskId: string): MutationResult;
 
   // ── alert outbox (durable, retrying critical alerts) ────────────────────────
   enqueueAlert(id: string, payloadJson: string): void;

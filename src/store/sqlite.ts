@@ -9,7 +9,11 @@ import type {
   NewWork,
   WorkRow,
   WorkState,
+  WorkKind,
   AlertRow,
+  InstanceLockRow,
+  WorkFilter,
+  MutationResult,
 } from './index.js';
 
 /**
@@ -51,7 +55,8 @@ CREATE TABLE IF NOT EXISTS work_queue (
   broadcastState TEXT NOT NULL DEFAULT 'none',
   opHash         TEXT,
   pinnedCounter  INTEGER,
-  attempts       INTEGER NOT NULL DEFAULT 0
+  attempts       INTEGER NOT NULL DEFAULT 0,
+  discardedAt    INTEGER
 );
 CREATE INDEX IF NOT EXISTS work_queue_rehydrate ON work_queue(state, poolIndex, chainSeq);
 
@@ -84,7 +89,24 @@ export class SqliteStore implements Store {
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     this.db.pragma('foreign_keys = ON');
+    // Contended commits (a 2nd CLI, or the bounded window before the live-lock gate trips)
+    // retry for up to 3s instead of throwing SQLITE_BUSY immediately.
+    this.db.pragma('busy_timeout = 3000');
     this.db.exec(DDL);
+    this.migrate();
+  }
+
+  /** Additive, idempotent migrations for DBs created before a column existed.
+   *  Fresh installs get the column from the CREATE TABLE above; this is a no-op for them. */
+  private migrate(): void {
+    this.ensureColumn('work_queue', 'discardedAt', 'INTEGER');
+  }
+
+  private ensureColumn(table: string, column: string, decl: string): void {
+    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!cols.some((c) => c.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+    }
   }
 
   close(): void {
@@ -253,6 +275,12 @@ export class SqliteStore implements Store {
     this.db.prepare('DELETE FROM instance_lock WHERE id = 1 AND holder = ?').run(holder);
   }
 
+  getInstanceLock(): InstanceLockRow | undefined {
+    return this.db
+      .prepare('SELECT holder, heartbeatAt FROM instance_lock WHERE id = 1')
+      .get() as InstanceLockRow | undefined;
+  }
+
   // ── alert outbox ──────────────────────────────────────────────────────────────
   enqueueAlert(id: string, payloadJson: string): void {
     this.db
@@ -276,6 +304,75 @@ export class SqliteStore implements Store {
 
   deleteAlert(id: string): void {
     this.db.prepare('DELETE FROM alert_outbox WHERE id = ?').run(id);
+  }
+
+  // ── dead-letter ops (the `relay jobs` CLI) ──────────────────────────────────
+  listWork(filter: WorkFilter): WorkRow[] {
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    if (filter.states?.length) {
+      clauses.push(`state IN (${filter.states.map(() => '?').join(',')})`);
+      params.push(...filter.states);
+    }
+    if (filter.kind) {
+      clauses.push('kind = ?');
+      params.push(filter.kind);
+    }
+    if (filter.jobId) {
+      clauses.push('jobId = ?');
+      params.push(filter.jobId);
+    }
+    if (!filter.includeDiscarded) clauses.push('discardedAt IS NULL');
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    const limit = filter.limit && filter.limit > 0 ? filter.limit : 50;
+    return this.db
+      .prepare(`SELECT * FROM work_queue ${where} ORDER BY poolIndex, chainSeq LIMIT ?`)
+      .all(...params, limit) as WorkRow[];
+  }
+
+  retryWork(taskId: string): MutationResult {
+    const txn = this.db.transaction((): MutationResult => {
+      const work = this.db
+        .prepare('SELECT jobId, kind, state FROM work_queue WHERE taskId = ?')
+        .get(taskId) as { jobId: string; kind: WorkKind; state: WorkState } | undefined;
+      if (!work) return { changed: false };
+      if (work.state !== 'failed') return { changed: false, kind: work.kind, jobId: work.jobId };
+
+      // Re-arm the durable row. broadcastState/pinnedCounter/opHash/attempts are LEFT INTACT
+      // so the boot reconcile (broadcastAlreadyLanded) skips a re-broadcast that already landed.
+      this.db.prepare(`UPDATE work_queue SET state = 'queued' WHERE taskId = ?`).run(taskId);
+      // Post-enqueue status for the kind: matches the normal (job.status, work.state) pairing
+      // AND blocks a duplicate user re-submit (submitPayment wants info_generated; submitUserTx
+      // rejects injecting_user_tx). Clear the stale error.
+      const nextStatus: JobStatus = work.kind === 'inject_user_tx' ? 'injecting_user_tx' : 'queued';
+      this.db
+        .prepare('UPDATE jobs SET status = ?, errorMessage = NULL WHERE jobId = ?')
+        .run(nextStatus, work.jobId);
+      return { changed: true, kind: work.kind, jobId: work.jobId };
+    });
+    return txn();
+  }
+
+  discardWork(taskId: string): MutationResult {
+    const now = Date.now();
+    const txn = this.db.transaction((): MutationResult => {
+      const work = this.db
+        .prepare('SELECT jobId, kind, discardedAt FROM work_queue WHERE taskId = ?')
+        .get(taskId) as { jobId: string; kind: WorkKind; discardedAt: number | null } | undefined;
+      if (!work) return { changed: false };
+      if (work.discardedAt != null) return { changed: false, kind: work.kind, jobId: work.jobId };
+
+      // Force terminal + stamp. ADDITIVE: never DELETE, never touch consumed_memos.
+      this.db
+        .prepare(`UPDATE work_queue SET state = 'failed', discardedAt = ? WHERE taskId = ?`)
+        .run(now, taskId);
+      const jobStatus: JobStatus = work.kind === 'inject_user_tx' ? 'user_tx_failed' : 'payment_failed';
+      this.db
+        .prepare('UPDATE jobs SET status = ?, errorMessage = ? WHERE jobId = ?')
+        .run(jobStatus, 'discarded by operator', work.jobId);
+      return { changed: true, kind: work.kind, jobId: work.jobId };
+    });
+    return txn();
   }
 }
 
