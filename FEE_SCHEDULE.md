@@ -48,7 +48,9 @@ oracle problem. We just never priced it.
 fee(txCount) = quantizeUp(baseMutez + perTxMutez × txCount, quantumMutez)
 ```
 
-Recommended starting parameters (calibrated to the measured costs above):
+Recommended starting parameters (calibrated to the measured costs above). The relay
+**ships dark** — these are the values an operator *sets* to enable the schedule; the
+code defaults reproduce today's flat fee exactly (§3.5):
 
 | Parameter | Value | Rationale |
 | --- | --- | --- |
@@ -82,6 +84,15 @@ optional request body:
 { "txCount": 3 }   // omitted by legacy clients
 ```
 
+**`txCount` is defined precisely as the number of sapling transactions the client
+WILL submit in Phase 2 — `sum(txns.length)` across the `userTransaction` payload,
+computed by the client from the params it builds.** Count the *expanded* sapling
+txs (including any note-management splits), not the UI item count. This is the exact
+value the relay re-counts and enforces in §3.3, so the client must request a quote
+for the count it will actually submit (see the correctness note there). Because the
+spend/output bytes are deterministic from the built params, the client always knows
+this number before it pays — there is no oracle problem.
+
 `Processor.getWorkerInfo()` (`src/runtime/processor.ts`) computes
 `quotedFeeMutez = schedule(txCount)` and:
 
@@ -110,16 +121,26 @@ the processor passes the job's stored `quotedFeeMutez` instead of the global
 
 ### 3.3 Enforce at Phase 2 — **before** injection
 
-`submitUserTransaction` must count the sapling transactions in the submitted
-`userTransaction` payload and reject with a 4xx **before enqueueing** if
-`actualTxCount > job.quotedTxCount`. This closes the obvious dodge (quote for
-1, submit 10). Rejecting before injection means the user loses nothing they
-hadn't already spent; the job stays in a resumable state so the client can
-re-quote and retry with a top-up payment — or simply fail with a clear error
-("batch has 10 transactions but the fee paid covers 1").
+`submitUserTransaction` counts the actual sapling txs in the submitted payload
+(`sum(txns.length)`) and rejects with a 4xx **before enqueueing** if
+`actualTxCount > job.quotedTxCount`. This closes the obvious dodge (quote for 1,
+submit 10).
 
-Submitting *fewer* txs than quoted is always fine (user overpaid; their
-choice; do not refund — refunds would create an amount-correlation channel).
+**The cost of a mis-quote falls on the client, and there is no top-up.** By Phase 2
+the user has already paid Phase 1 — the memo is consumed and the job is
+`payment_confirmed`. The single-payment-per-job model has no channel to add to an
+existing job's fee (a second payment is a different memo/job), so a rejected job
+**forfeits the prepaid fee**. The rejection therefore protects the *relay* from the
+griefing dodge, but a too-low quote is a *client bug* that costs the *user* a fee.
+This makes **client-side exactness a hard correctness requirement**: the client MUST
+request the quote for the exact `txCount` it will submit (§3.1). The relay's error is
+explicit ("batch has 10 sapling txs but the paid fee covers 3"); it does not attempt
+a resumable top-up (that would need a multi-payment protocol — explicitly out of
+scope for v1, noted in §6). An over-cautious client may quote slightly high and
+submit fewer — that is always fine:
+
+Submitting *fewer* txs than quoted is allowed (the user overpaid by their own
+choice; do **not** refund — refunds would create an amount-correlation channel).
 
 ### 3.4 Publish in the relay descriptor
 
@@ -137,18 +158,25 @@ This is what makes a future multi-relay client able to show fees without
 creating a job — and it keeps the network's "sort by trust, never by fee"
 stance honest, because fees are public and comparable but not the ranking key.
 
-### 3.5 Config
+### 3.5 Config — ships dark by default
+
+The defaults reproduce **today's exact flat behavior**, so upgrading a relay never
+silently changes its pricing or which jobs it accepts. The operator opts into the
+schedule by setting the recommended values (§2).
 
 ```
-FEE_BASE_MUTEZ      (default 250_000)
-FEE_PER_TX_MUTEZ    (default 150_000)
-FEE_QUANTUM_MUTEZ   (default 250_000)
-LEGACY_FLAT_MAX_TXS (default 5 — see §5)
+                       DARK DEFAULT (= today)     RECOMMENDED (opt-in, §2)
+FEE_BASE_MUTEZ         = PAYMENT_AMOUNT_MUTEZ      250_000
+FEE_PER_TX_MUTEZ       = 0                         150_000
+FEE_QUANTUM_MUTEZ      = 1   (no quantization)     250_000
+LEGACY_FLAT_MAX_TXS    = 0   (no cap)              5  (see §5)
 ```
 
-`PAYMENT_AMOUNT_MUTEZ` stays as the legacy flat quote. Setting
-`FEE_PER_TX_MUTEZ=0` and `FEE_BASE_MUTEZ=PAYMENT_AMOUNT_MUTEZ` reproduces
-today's behavior exactly, so the feature ships dark.
+With the dark defaults, `schedule(txCount) = quantizeUp(PAYMENT_AMOUNT + 0×txCount, 1)
+= PAYMENT_AMOUNT` for every `txCount`, and the legacy Phase-2 cap is off — byte-for-byte
+the current relay. `PAYMENT_AMOUNT_MUTEZ` remains the legacy (no-`txCount`) quote in
+both modes. Enabling the schedule and enabling the legacy griefing cap
+(`LEGACY_FLAT_MAX_TXS=5`) are the operator's two deliberate switches.
 
 ## 4. Why quantized: the fee-redemption fingerprint
 
@@ -187,12 +215,13 @@ send `txCount`. The v3 client hardcodes `RELAY_FEE_XTZ = 1`
 (`src/app/core/bridge/engine.ts` in shield-bridge). None of them break:
 
 1. **Relay ships dark** (defaults reproduce flat pricing, §3.5).
-2. **Flip the schedule on.** Legacy (no-`txCount`) jobs keep being quoted the
-   flat 1 XTZ — but Phase 2 enforces `LEGACY_FLAT_MAX_TXS` (default 5, the
-   point where flat 1 XTZ still clears cost). A legacy client submitting a
-   6–10-item batch gets a clean 4xx before injection with a "please update"
-   message. This converts the silent loss into an explicit, harmless error
-   for the rare large-batch legacy user.
+2. **Flip the schedule on** (operator sets §2's values incl. `LEGACY_FLAT_MAX_TXS=5`,
+   the point where flat 1 XTZ still clears cost). Legacy (no-`txCount`) jobs keep
+   being quoted — and paying — the flat 1 XTZ unchanged; the only new behavior is
+   that a legacy client submitting a 6–10-item batch gets a clean 4xx before injection
+   with a "please update" message. This converts the silent *relay* loss into an
+   explicit, harmless error for the rare large-batch legacy user. **No existing user
+   pays more than they do today.**
 3. **Clients adopt the quote.** shield-bridge changes, in order:
    - read `paymentAmount` from the `get-worker-info` response instead of the
      hardcoded constant (the response field already exists — today's clients
@@ -207,9 +236,19 @@ send `txCount`. The v3 client hardcodes `RELAY_FEE_XTZ = 1`
 4. **Eventually** drop `LEGACY_FLAT_MAX_TXS` once flat-fee client traffic is
    gone (observable: jobs with `legacyQuote = true` per week → 0).
 
-Singles getting cheaper (1.00 → 0.50) means the upgrade is user-positive on
-day one, which is the adoption story: there is no "fee increase" framing —
-batches stop being subsidized by the relay, singles stop subsidizing batches.
+The benefit lands on **two distinct timelines** — don't conflate them:
+
+- **Day one (schedule enabled, all clients):** the *relay* stops bleeding. Underwater
+  large batches are refused (`LEGACY_FLAT_MAX_TXS`) instead of injected at a loss; the
+  griefing invariant is closed. Existing clients pay exactly what they pay today.
+- **After client adoption (updated clients only):** *users* pay less. A single drops
+  1.00 → 0.50 and batches are priced fairly. This is the "no fee increase, ever"
+  adoption story — singles stop subsidizing batches and vice-versa — but it requires
+  the client to send `txCount` and read `paymentAmount` (§5.3); a legacy client never
+  sees the discount, it just keeps paying the flat 1 XTZ it always did.
+
+So enabling the schedule is safe and griefing-closing on day one regardless of client
+state; the user-facing price drop follows whenever the client ships.
 
 ## 6. Open questions
 
@@ -222,11 +261,11 @@ batches stop being subsidized by the relay, singles stop subsidizing batches.
    set ~82k vs ~31k) but storage — the dominant term — does not vary much by
    pool. Proposal treats all pools identically; revisit only if a measured
    gap exceeds the quantum.
-3. **Should `txCount` count sapling txs or contents?** This doc assumes
-   *sapling transactions* (what the client calls batch items), since storage
-   burn scales with those. If a single item can expand to multiple sapling
-   txs (e.g. note-management splits), count the expanded number — the client
-   builds the params, so it knows.
+3. ~~**Should `txCount` count sapling txs or contents?**~~ **Resolved (§3.1):**
+   `txCount` = the expanded number of sapling txs the client will submit
+   (`sum(txns.length)`), since storage burn scales with those and the relay
+   enforces on exactly that count. Note-management splits count toward it; the
+   client builds the params, so it always knows the number before it pays.
 4. **Quote TTL.** The quote is pinned to the job row and jobs already expire
    (`JOB_TTL_SECONDS`); no separate quote expiry is needed unless schedule
    changes mid-flight become common. Recommendation: schedule changes only
