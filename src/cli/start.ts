@@ -9,6 +9,7 @@ import { Processor } from '../runtime/processor.js';
 import { buildServer } from '../server/server.js';
 import { rehydrate } from '../runtime/rehydrate.js';
 import { startSaplingParamsServer, type ParamsServer } from '../runtime/saplingParamsServer.js';
+import { ensureWorkersRevealed } from '../core/reveal.js';
 import { startGasRefillLoop } from '../economics/refillScheduler.js';
 import { acquireInstanceLock } from '../runtime/instanceLock.js';
 import { Metrics } from '../observability/metrics.js';
@@ -67,6 +68,10 @@ export async function start(): Promise<void> {
     { workers: workers.map((w) => ({ index: w.index, tz1: w.tezosAddress })) },
     'worker pool ready',
   );
+
+  // Turnkey: reveal any unrevealed worker keys BEFORE serving, so the first relayed op
+  // never fails on a bundled-reveal gas batch. No-op once workers are revealed.
+  await ensureWorkersRevealed(workers, logger);
 
   const queue = new WorkerQueue();
   const wsHub = new WsHub(store, cfg.REQUIRE_JOB_SECRET);
