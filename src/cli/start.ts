@@ -7,6 +7,7 @@ import { WorkerQueue } from '../runtime/workerQueue.js';
 import { WsHub } from '../server/wsHub.js';
 import { Processor } from '../runtime/processor.js';
 import { buildServer } from '../server/server.js';
+import { buildRelayInfo } from '../server/info.js';
 import { rehydrate } from '../runtime/rehydrate.js';
 import { startSaplingParamsServer, type ParamsServer } from '../runtime/saplingParamsServer.js';
 import { ensureWorkersRevealed } from '../core/reveal.js';
@@ -81,7 +82,7 @@ export async function start(): Promise<void> {
   rehydrate(store, queue, processor, logger);
 
   let ready = false;
-  const app = await buildServer({ processor, wsHub, metrics, metricsToken: cfg.METRICS_TOKEN, isReady: () => ready });
+  const app = await buildServer({ processor, wsHub, metrics, info: buildRelayInfo(cfg), metricsToken: cfg.METRICS_TOKEN, isReady: () => ready });
   await app.listen({ port: cfg.PORT, host: '0.0.0.0' });
   ready = true;
   logger.info({ port: cfg.PORT }, 'shield-relay listening');

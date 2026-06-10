@@ -5,6 +5,7 @@ import type { Duplex } from 'node:stream';
 import type { Processor } from '../runtime/processor.js';
 import type { WsHub } from './wsHub.js';
 import type { Metrics } from '../observability/metrics.js';
+import type { RelayInfo } from './info.js';
 import { registerRoutes } from './routes.js';
 import { registerHealth } from './health.js';
 
@@ -12,6 +13,8 @@ export interface ServerDeps {
   processor: Processor;
   wsHub: WsHub;
   metrics: Metrics;
+  /** Public capability + fee descriptor served at GET /info (lets a client preview the fee). */
+  info: RelayInfo;
   /** When unset, /metrics is disabled (404). When set, scrapers must send
    *  `Authorization: Bearer <token>`. Keeps per-worker gas/queue metadata private. */
   metricsToken?: string | undefined;
@@ -42,6 +45,10 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
 
   registerHealth(app, deps.isReady);
   registerRoutes(app, deps.processor);
+  // Public descriptor: capability + fee schedule, no side effects. Lets a client show
+  // the fee BEFORE minting a job (a 404 here = a legacy/flat relay → client uses 1 XTZ).
+  app.get('/info', async () => deps.info);
+  app.get('/.well-known/shield-relay.json', async () => deps.info); // P4 canonical path
   // /metrics: default-deny. Disabled (404) unless METRICS_TOKEN is set; then a
   // matching bearer token is required. Prevents a public ingress from leaking
   // per-worker gas balance + queue depth (privacy-relevant metadata).
