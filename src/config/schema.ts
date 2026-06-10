@@ -61,6 +61,7 @@ export const ConfigSchema = z
     DRAIN_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
     RETAIN_CLIENT_IPS: bool.default('false'),
 
+    ALERT_WEBHOOK_URL: z.string().url().optional(),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
   })
   .transform((c) => ({

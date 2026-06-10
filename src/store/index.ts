@@ -68,6 +68,13 @@ export interface NewWork {
   payloadJson: string;
 }
 
+export interface AlertRow {
+  id: string;
+  payloadJson: string;
+  attempts: number;
+  nextAttemptAt: number;
+}
+
 export interface Store {
   /** Run migrations / open the DB. Throws if the data dir is on an unsafe networked FS. */
   init(): void;
@@ -106,4 +113,16 @@ export interface Store {
   setBroadcast(taskId: string, opHash: string): void;
   /** Mark the work item done AND set the job's status in one transaction. */
   completeWork(taskId: string, jobId: string, jobStatus: JobStatus, userTxHash?: string): void;
+
+  // ── instance lock (refuse a 2nd process on the same pool/DB) ─────────────────
+  /** Claim the single-instance lock; false if a fresh holder already has it. */
+  tryAcquireInstanceLock(holder: string, staleMs: number): boolean;
+  heartbeatInstanceLock(holder: string): void;
+  releaseInstanceLock(holder: string): void;
+
+  // ── alert outbox (durable, retrying critical alerts) ────────────────────────
+  enqueueAlert(id: string, payloadJson: string): void;
+  listDueAlerts(now: number, limit: number): AlertRow[];
+  bumpAlertAttempt(id: string, nextAttemptAt: number): void;
+  deleteAlert(id: string): void;
 }

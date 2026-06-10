@@ -3,6 +3,7 @@ import type { Config } from '../config/schema.js';
 import type { Store } from '../store/index.js';
 import type { Worker } from '../sapling/pool.js';
 import type { Logger } from '../observability/logger.js';
+import type { Metrics } from '../observability/metrics.js';
 import type { ContractParams } from '../core/types.js';
 import { WorkerQueue } from './workerQueue.js';
 import { WsHub } from '../server/wsHub.js';
@@ -23,6 +24,7 @@ export interface ProcessorDeps {
   workers: Worker[];
   wsHub: WsHub;
   logger: Logger;
+  metrics: Metrics;
 }
 
 /**
@@ -154,6 +156,7 @@ export class Processor {
         work.pinnedCounter != null &&
         (await broadcastAlreadyLanded(worker.client, worker.tezosAddress, work.pinnedCounter));
       if (!landed) {
+        const stopTimer = this.d.metrics.broadcast.startTimer({ kind: 'payment' });
         const counter = await readCounter(worker.client, worker.tezosAddress);
         this.d.store.setBroadcasting(taskId, counter); // pin BEFORE send
         const payment = JSON.parse(work.payloadJson) as ContractParams;
@@ -167,6 +170,7 @@ export class Processor {
             this.d.store.setJobStatus(job.jobId, 'verifying_payment', { paymentTxHash: opHash });
           },
         );
+        stopTimer();
       }
 
       if (!(await verifyPaymentMemo(worker.sdk, job.memo, this.d.config.PAYMENT_AMOUNT_MUTEZ))) {
@@ -174,10 +178,12 @@ export class Processor {
       }
       // tryConsumeMemo is same-job idempotent → safe to re-run on resume.
       if (!this.d.store.tryConsumeMemo(job.memo, job.jobId)) {
+        this.d.metrics.memoReplayRejected.inc();
         return this.failPayment(taskId, job.jobId, 'Memo already consumed.');
       }
 
       this.d.store.completeWork(taskId, job.jobId, 'payment_confirmed');
+      this.d.metrics.jobs.inc({ status: 'payment_confirmed' });
       this.d.wsHub.publish(frame(job.jobId, 'payment_confirmed'));
       this.d.logger.info({ jobId: job.jobId }, 'payment confirmed');
     } catch (e) {
@@ -188,6 +194,7 @@ export class Processor {
   private failPayment(taskId: string, jobId: string, msg: string): void {
     this.d.store.setWorkState(taskId, 'failed');
     this.d.store.setJobStatus(jobId, 'payment_failed', { errorMessage: msg });
+    this.d.metrics.jobs.inc({ status: 'payment_failed' });
     this.d.wsHub.publish(frame(jobId, 'payment_failed', { error: msg }));
     this.d.logger.warn({ jobId, msg }, 'payment failed');
   }
@@ -212,6 +219,7 @@ export class Processor {
       if (landed) {
         opHash = work.opHash ?? 'recovered-on-restart';
       } else {
+        const stopTimer = this.d.metrics.broadcast.startTimer({ kind: 'user_tx' });
         const counter = await readCounter(worker.client, worker.tezosAddress);
         this.d.store.setBroadcasting(taskId, counter); // pin BEFORE send
         const userTransaction = JSON.parse(work.payloadJson) as ContractParams | ContractParams[];
@@ -222,15 +230,18 @@ export class Processor {
           this.d.config.CONFIRMATIONS_PHASE2,
           (h) => this.d.store.setBroadcast(taskId, h),
         );
+        stopTimer();
       }
 
       this.d.store.completeWork(taskId, job.jobId, 'completed', opHash);
+      this.d.metrics.jobs.inc({ status: 'completed' });
       this.d.wsHub.publish(frame(job.jobId, 'completed', { opHash }));
       this.d.logger.info({ jobId: job.jobId, opHash }, 'user transaction completed');
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'User transaction injection failed.';
       this.d.store.setWorkState(taskId, 'failed');
       this.d.store.setJobStatus(job.jobId, 'user_tx_failed', { errorMessage: msg });
+      this.d.metrics.jobs.inc({ status: 'user_tx_failed' });
       this.d.wsHub.publish(frame(job.jobId, 'user_tx_failed', { error: msg }));
       this.d.logger.warn({ jobId: job.jobId, msg }, 'user transaction failed');
     }

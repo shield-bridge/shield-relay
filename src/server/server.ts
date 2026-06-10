@@ -4,12 +4,14 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import type { Processor } from '../runtime/processor.js';
 import type { WsHub } from './wsHub.js';
+import type { Metrics } from '../observability/metrics.js';
 import { registerRoutes } from './routes.js';
 import { registerHealth } from './health.js';
 
 export interface ServerDeps {
   processor: Processor;
   wsHub: WsHub;
+  metrics: Metrics;
   isReady: () => boolean;
 }
 
@@ -37,6 +39,10 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
 
   registerHealth(app, deps.isReady);
   registerRoutes(app, deps.processor);
+  app.get('/metrics', async (_req, reply) => {
+    reply.header('content-type', deps.metrics.contentType);
+    return reply.send(await deps.metrics.render());
+  });
   await app.ready();
 
   const wss = new WebSocketServer({ noServer: true });

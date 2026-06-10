@@ -9,6 +9,7 @@ import type {
   NewWork,
   WorkRow,
   WorkState,
+  AlertRow,
 } from './index.js';
 
 /**
@@ -53,6 +54,21 @@ CREATE TABLE IF NOT EXISTS work_queue (
   attempts       INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS work_queue_rehydrate ON work_queue(state, poolIndex, chainSeq);
+
+-- Durable, retrying critical alerts (low balance, refill failed).
+CREATE TABLE IF NOT EXISTS alert_outbox (
+  id            TEXT PRIMARY KEY,
+  payloadJson   TEXT NOT NULL,
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  nextAttemptAt INTEGER NOT NULL
+);
+
+-- Single-instance guard: refuse a 2nd process on the same pool/DB.
+CREATE TABLE IF NOT EXISTS instance_lock (
+  id          INTEGER PRIMARY KEY CHECK (id = 1),
+  holder      TEXT NOT NULL,
+  heartbeatAt INTEGER NOT NULL
+);
 `;
 
 const UNIQUE_VIOLATION = 'SQLITE_CONSTRAINT_PRIMARYKEY';
@@ -204,6 +220,62 @@ export class SqliteStore implements Store {
         .run(jobStatus, userTxHash ?? null, jobId);
     });
     txn();
+  }
+
+  // ── instance lock ───────────────────────────────────────────────────────────
+  tryAcquireInstanceLock(holder: string, staleMs: number): boolean {
+    const now = Date.now();
+    const txn = this.db.transaction((): boolean => {
+      const row = this.db.prepare('SELECT holder, heartbeatAt FROM instance_lock WHERE id = 1').get() as
+        | { holder: string; heartbeatAt: number }
+        | undefined;
+      if (row && row.holder !== holder && now - row.heartbeatAt < staleMs) {
+        return false; // a different, still-alive holder owns it
+      }
+      this.db
+        .prepare(
+          `INSERT INTO instance_lock (id, holder, heartbeatAt) VALUES (1, @holder, @now)
+           ON CONFLICT(id) DO UPDATE SET holder = @holder, heartbeatAt = @now`,
+        )
+        .run({ holder, now });
+      return true;
+    });
+    return txn();
+  }
+
+  heartbeatInstanceLock(holder: string): void {
+    this.db
+      .prepare('UPDATE instance_lock SET heartbeatAt = ? WHERE id = 1 AND holder = ?')
+      .run(Date.now(), holder);
+  }
+
+  releaseInstanceLock(holder: string): void {
+    this.db.prepare('DELETE FROM instance_lock WHERE id = 1 AND holder = ?').run(holder);
+  }
+
+  // ── alert outbox ──────────────────────────────────────────────────────────────
+  enqueueAlert(id: string, payloadJson: string): void {
+    this.db
+      .prepare(
+        'INSERT OR IGNORE INTO alert_outbox (id, payloadJson, attempts, nextAttemptAt) VALUES (?, ?, 0, ?)',
+      )
+      .run(id, payloadJson, Date.now());
+  }
+
+  listDueAlerts(now: number, limit: number): AlertRow[] {
+    return this.db
+      .prepare('SELECT * FROM alert_outbox WHERE nextAttemptAt <= ? ORDER BY nextAttemptAt LIMIT ?')
+      .all(now, limit) as AlertRow[];
+  }
+
+  bumpAlertAttempt(id: string, nextAttemptAt: number): void {
+    this.db
+      .prepare('UPDATE alert_outbox SET attempts = attempts + 1, nextAttemptAt = ? WHERE id = ?')
+      .run(nextAttemptAt, id);
+  }
+
+  deleteAlert(id: string): void {
+    this.db.prepare('DELETE FROM alert_outbox WHERE id = ?').run(id);
   }
 }
 
