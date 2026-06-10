@@ -357,10 +357,17 @@ export class SqliteStore implements Store {
     const now = Date.now();
     const txn = this.db.transaction((): MutationResult => {
       const work = this.db
-        .prepare('SELECT jobId, kind, discardedAt FROM work_queue WHERE taskId = ?')
-        .get(taskId) as { jobId: string; kind: WorkKind; discardedAt: number | null } | undefined;
+        .prepare('SELECT jobId, kind, state, discardedAt FROM work_queue WHERE taskId = ?')
+        .get(taskId) as
+        | { jobId: string; kind: WorkKind; state: WorkState; discardedAt: number | null }
+        | undefined;
       if (!work) return { changed: false };
       if (work.discardedAt != null) return { changed: false, kind: work.kind, jobId: work.jobId };
+      // NEVER discard a delivered job. A 'done' row is a truthful completed record
+      // (broadcastState=confirmed, userTxHash set); forcing it to *_failed would corrupt the
+      // audit trail. Discard's only legitimate targets are 'failed' dead-letters and
+      // crash-orphaned 'queued'/'running' rows — mirrors retryWork's state guard.
+      if (work.state === 'done') return { changed: false, kind: work.kind, jobId: work.jobId };
 
       // Force terminal + stamp. ADDITIVE: never DELETE, never touch consumed_memos.
       this.db

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { rmSync } from 'node:fs';
 import { SqliteStore } from '../src/store/sqlite.js';
+import { relayLiveness } from '../src/cli/jobs.js';
 import type { JobStatus, WorkKind } from '../src/store/index.js';
 
 function freshStore(): SqliteStore {
@@ -121,6 +122,26 @@ describe('dead-letter ops — store layer', () => {
     expect(store.discardWork(taskId).changed).toBe(false);
   });
 
+  it('discardWork REFUSES a completed (done) row — never corrupts a delivered job', () => {
+    const store = freshStore();
+    // Build a genuine completed inject_user_tx record via completeWork.
+    const jobId = 'job-done-1', taskId = 'task-done-1';
+    store.createJob({ jobId, paymentPoolIndex: 0, broadcastPoolIndex: 1, memo: 'm', jobSecretHash: 'h', expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+    store.setJobStatus(jobId, 'payment_confirmed');
+    store.enqueueWork({ taskId, jobId, poolIndex: 1, kind: 'inject_user_tx', payloadJson: JSON.stringify({ txns: ['aa'] }) }, 'payment_confirmed', 'injecting_user_tx');
+    store.setBroadcasting(taskId, 7);
+    store.completeWork(taskId, jobId, 'completed', 'op-final'); // state=done, broadcastState=confirmed, userTxHash=op-final
+
+    const r = store.discardWork(taskId);
+    expect(r.changed).toBe(false);
+    const w = store.getWork(taskId)!;
+    expect(w.state).toBe('done'); // untouched
+    expect(w.discardedAt).toBeNull();
+    const job = store.getJob(jobId)!;
+    expect(job.status).toBe('completed'); // NOT flipped to *_failed
+    expect(job.userTxHash).toBe('op-final'); // delivery record intact
+  });
+
   it('listWork: failed-only by default excludes done; includeDiscarded controls discarded visibility', () => {
     const store = freshStore();
     const a = seedFailed(store, 'inject_payment', 'payment_failed');
@@ -152,6 +173,14 @@ describe('dead-letter ops — store layer', () => {
     const lock = store.getInstanceLock()!;
     expect(lock.holder).toBe('host:1:abcd');
     expect(lock.heartbeatAt).toBeTypeOf('number');
+  });
+
+  it('relayLiveness: the load-bearing offline-gate predicate (none / fresh / stale boundary)', () => {
+    expect(relayLiveness(undefined, 1_000)).toBeUndefined(); // no lock → not live
+    // STALE_MS is 60_000: heartbeat at t=0, now=59s → live; now=60s → stale (reclaimable).
+    expect(relayLiveness({ holder: 'h', heartbeatAt: 0 }, 59_000)).toMatchObject({ holder: 'h' });
+    expect(relayLiveness({ holder: 'h', heartbeatAt: 0 }, 60_000)).toBeUndefined();
+    expect(relayLiveness({ holder: 'h', heartbeatAt: 0 }, 61_000)).toBeUndefined();
   });
 });
 

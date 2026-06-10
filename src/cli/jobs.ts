@@ -2,7 +2,10 @@ import { join } from 'node:path';
 import { loadConfig } from '../config/load.js';
 import { SqliteStore } from '../store/sqlite.js';
 import { STALE_MS } from '../runtime/instanceLock.js';
-import type { JobRow, WorkRow, WorkState, WorkKind } from '../store/index.js';
+import type { InstanceLockRow, JobRow, WorkRow, WorkState, WorkKind } from '../store/index.js';
+
+/** Upper bound on rows a single bulk `--all` mutation touches; saturation is surfaced, not silent. */
+const BULK_CAP = 1000;
 
 /**
  * `relay jobs` — dead-letter ops. Inspect and recover work items the relay parked
@@ -23,13 +26,20 @@ function openStore(): SqliteStore {
   return store;
 }
 
-/** Returns the lock holder iff a relay is LIVE (heartbeat within the same stale window
- *  the relay uses to reclaim). Pure read — never acquires/heartbeats the lock. */
-function liveHolder(store: SqliteStore): { holder: string; ageMs: number } | undefined {
-  const lock = store.getInstanceLock();
+/** Pure liveness predicate (exported for tests): does this lock mean a relay is live NOW?
+ *  Uses the SAME STALE_MS the relay uses to reclaim, so the CLI's verdict matches `relay start`. */
+export function relayLiveness(
+  lock: InstanceLockRow | undefined,
+  nowMs: number,
+): { holder: string; ageMs: number } | undefined {
   if (!lock) return undefined;
-  const ageMs = Date.now() - lock.heartbeatAt;
+  const ageMs = nowMs - lock.heartbeatAt;
   return ageMs < STALE_MS ? { holder: lock.holder, ageMs } : undefined;
+}
+
+/** Returns the lock holder iff a relay is LIVE. Pure read — never acquires/heartbeats the lock. */
+function liveHolder(store: SqliteStore): { holder: string; ageMs: number } | undefined {
+  return relayLiveness(store.getInstanceLock(), Date.now());
 }
 
 /** Mutators are offline-only. If a relay holds the lock, refuse with exit 2 and explain. */
@@ -143,9 +153,13 @@ export function jobsList(opts: ListOpts): void {
     else if (opts.stuck) states = ['failed', 'queued', 'running'];
     else states = ['failed']; // dead-letter default
     const includeDiscarded = Boolean(opts.all);
-    const limit = opts.limit ? parseInt(opts.limit, 10) : 50;
+    const parsed = opts.limit ? parseInt(opts.limit, 10) : 50;
+    const limit = Number.isFinite(parsed) && parsed > 0 ? parsed : 50;
 
-    const rows = store.listWork({ states, kind, includeDiscarded, limit });
+    // Fetch one extra to detect (and surface) truncation instead of silently capping.
+    const fetched = store.listWork({ states, kind, includeDiscarded, limit: limit + 1 });
+    const truncated = fetched.length > limit;
+    const rows = truncated ? fetched.slice(0, limit) : fetched;
     const jobs = new Map<string, JobRow | undefined>();
     const jobOf = (id: string): JobRow | undefined => {
       if (!jobs.has(id)) jobs.set(id, store.getJob(id));
@@ -153,12 +167,13 @@ export function jobsList(opts: ListOpts): void {
     };
 
     if (opts.json) {
-      console.log(JSON.stringify(rows.map((w) => jsonRow(w, jobOf(w.jobId))), null, 2));
+      console.log(JSON.stringify({ truncated, rows: rows.map((w) => jsonRow(w, jobOf(w.jobId))) }, null, 2));
       return;
     }
 
     const live = liveHolder(store);
-    console.log(`\nshield-relay dead-letter — ${rows.length} row(s)${live ? `  (relay LIVE: ${live.holder})` : ''}\n`);
+    const cap = truncated ? `, capped at ${limit} — raise --limit for more` : '';
+    console.log(`\nshield-relay dead-letter — ${rows.length} row(s)${cap}${live ? `  (relay LIVE: ${live.holder})` : ''}\n`);
     if (rows.length === 0) {
       console.log('  (nothing to show — no matching work items)\n');
       return;
@@ -244,7 +259,8 @@ function resolveTargets(
   const stateFlag = parseState(opts.state);
   if (opts.all) {
     const states = stateFlag ? [stateFlag] : defaultStates;
-    return store.listWork({ states, kind, limit: 1000 });
+    // +1 so the caller can detect saturation and warn instead of silently truncating.
+    return store.listWork({ states, kind, limit: BULK_CAP + 1 });
   }
   if (!id) throw new Error('specify a taskId / jobId, or --all (with a filter)');
   if (id.startsWith('job-')) {
@@ -280,7 +296,9 @@ export function jobsRetry(id: string | undefined, opts: RetryOpts): void {
       store.close();
       process.exit(1);
     }
-    const targets = resolveTargets(store, id, opts, ['failed']);
+    const resolved = resolveTargets(store, id, opts, ['failed']);
+    const capped = opts.all && resolved.length > BULK_CAP;
+    const targets = capped ? resolved.slice(0, BULK_CAP) : resolved;
     if (targets.length === 0) {
       console.log('  no failed work matched — nothing to retry.');
       return;
@@ -310,7 +328,7 @@ export function jobsRetry(id: string | undefined, opts: RetryOpts): void {
     }
 
     if (opts.json) {
-      console.log(JSON.stringify({ dryRun: Boolean(opts.dryRun), results }, null, 2));
+      console.log(JSON.stringify({ dryRun: Boolean(opts.dryRun), capped, results }, null, 2));
       return;
     }
     console.log('');
@@ -322,6 +340,9 @@ export function jobsRetry(id: string | undefined, opts: RetryOpts): void {
       console.log(`\n✓ ${armed} task(s) re-armed. They resume on the NEXT \`relay start\` — restart the relay to process them.\n`);
     } else {
       console.log('');
+    }
+    if (capped) {
+      console.log(`⚠ hit the ${BULK_CAP}-row cap — more failed rows match. Re-run \`relay jobs retry --all\` for the next batch (re-armed rows are skipped).\n`);
     }
   } finally {
     store.close();
@@ -342,14 +363,28 @@ export function jobsDiscard(id: string | undefined, opts: DiscardOpts): void {
   const store = openStore();
   try {
     assertOffline(store);
-    if (opts.all && !opts.state && !opts.kind) {
-      console.error('✗ `discard --all` is too broad. Scope it with --state <failed|...> or --kind <payment|user_tx>.');
+    // 'done' is never discardable — a completed/delivered job is a truthful record.
+    if (parseState(opts.state) === 'done') {
+      console.error("✗ refusing to discard 'done' rows — they are completed, delivered jobs.");
       store.close();
       process.exit(1);
     }
-    const targets = resolveTargets(store, id, opts, ['failed']);
+    if (opts.all && !opts.state && !opts.kind) {
+      console.error('✗ `discard --all` is too broad. Scope it with --state <failed|queued|running> or --kind <payment|user_tx>.');
+      store.close();
+      process.exit(1);
+    }
+    const resolved = resolveTargets(store, id, opts, ['failed']);
+    const capped = opts.all && resolved.length > BULK_CAP;
+    const bounded = capped ? resolved.slice(0, BULK_CAP) : resolved;
+    // A bare taskId can resolve a 'done' row (getWork has no state filter) — surface + exclude it.
+    const refusedDone = bounded.filter((w) => w.state === 'done');
+    const targets = bounded.filter((w) => w.state !== 'done');
+    for (const w of refusedDone) {
+      console.log(`  ✗ ${w.taskId.slice(0, 8)}  ${(KIND_SHORT[w.kind] ?? w.kind).padEnd(8)} completed (done) — cannot discard a delivered job`);
+    }
     if (targets.length === 0) {
-      console.log('  no matching work — nothing to discard.');
+      console.log(refusedDone.length ? '\n  nothing discardable (targets are completed).\n' : '  no matching work — nothing to discard.');
       return;
     }
 
@@ -387,11 +422,14 @@ export function jobsDiscard(id: string | undefined, opts: DiscardOpts): void {
       results.push({ taskId: w.taskId, kind: w.kind, outcome: r.changed ? 'discarded' : 'no-op (already discarded)' });
     }
     if (opts.json) {
-      console.log(JSON.stringify({ results }, null, 2));
+      console.log(JSON.stringify({ capped, results }, null, 2));
       return;
     }
     const n = results.filter((r) => r.outcome === 'discarded').length;
     console.log(`\n✓ ${n} task(s) discarded (parked terminal; rows + memos preserved).\n`);
+    if (capped) {
+      console.log(`⚠ hit the ${BULK_CAP}-row cap — more rows match. Re-run for the next batch (discarded rows are skipped).\n`);
+    }
   } finally {
     store.close();
   }
