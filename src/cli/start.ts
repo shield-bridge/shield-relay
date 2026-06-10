@@ -7,6 +7,8 @@ import { WorkerQueue } from '../runtime/workerQueue.js';
 import { WsHub } from '../server/wsHub.js';
 import { Processor } from '../runtime/processor.js';
 import { buildServer } from '../server/server.js';
+import { rehydrate } from '../runtime/rehydrate.js';
+import { startGasRefillLoop } from '../economics/refillScheduler.js';
 
 /**
  * `relay start` — wire the whole relay together and listen.
@@ -39,18 +41,24 @@ export async function start(): Promise<void> {
   const wsHub = new WsHub(store, cfg.REQUIRE_JOB_SECRET);
   const processor = new Processor({ config: cfg, store, queue, workers, wsHub, logger });
 
+  // Resume any paid-but-unfinished work from before a restart (counter-pin safe).
+  rehydrate(store, queue, processor, logger);
+
   let ready = false;
   const app = await buildServer({ processor, wsHub, isReady: () => ready });
   await app.listen({ port: cfg.PORT, host: '0.0.0.0' });
   ready = true;
   logger.info({ port: cfg.PORT }, 'shield-relay listening');
 
+  const stopRefill = startGasRefillLoop({ config: cfg, queue, workers, logger });
+
   const shutdown = async (sig: string): Promise<void> => {
-    logger.info({ sig }, 'shutting down');
-    ready = false;
+    logger.info({ sig }, 'draining and shutting down');
+    ready = false; // /readyz → 503; stop accepting new work
+    stopRefill();
     try {
-      await app.close();
-      await queue.drain();
+      await app.close(); // stop new HTTP + WS
+      await queue.drain(); // let in-flight per-worker tasks finish
       store.close();
     } finally {
       process.exit(0);

@@ -11,6 +11,7 @@ import { frame } from '../server/statusFrames.js';
 import { generateJobSecret, generateMemo, hashJobSecret, checkJobSecret } from '../server/auth.js';
 import { broadcastPayment, verifyPaymentMemo } from '../core/payment.js';
 import { injectUserTransaction } from '../core/inject.js';
+import { readCounter, broadcastAlreadyLanded } from './reconcile.js';
 
 const HEX = /^[0-9a-fA-F]+$/;
 const MAX_TXN_HEX = 100_000;
@@ -27,7 +28,11 @@ export interface ProcessorDeps {
 /**
  * The orchestration layer: maps the three wire endpoints onto durable state +
  * per-worker queue + core chain ops + WS fan-out. Every status transition is
- * persisted (Store) before it is published (WsHub) — persist-then-fanout.
+ * persisted (Store) before it is published (WsHub).
+ *
+ * Crash-safety: the submit endpoints write a durable work_queue row BEFORE the
+ * 2xx, and `runTask` is restart-safe — a counter pinned before `.send()` lets a
+ * re-hydrated mid-flight task skip a re-broadcast that already landed.
  */
 export class Processor {
   constructor(private readonly d: ProcessorDeps) {}
@@ -36,7 +41,6 @@ export class Processor {
   getWorkerInfo() {
     const n = this.d.workers.length;
     const paymentPoolIndex = randomInt(n);
-    // Phase-2 broadcasts from a DIFFERENT physical tz1 when the pool allows it.
     const broadcastPoolIndex = n > 1 ? (paymentPoolIndex + 1 + randomInt(n - 1)) % n : paymentPoolIndex;
 
     const jobId = `job-${randomUUID()}`;
@@ -80,59 +84,9 @@ export class Processor {
     );
     if (seq === null) throw new HttpError(409, 'Job status changed (concurrent submit).');
 
-    this.d.queue
-      .enqueue(job.paymentPoolIndex, () => this.runPayment(taskId))
-      .catch((e: unknown) => this.d.logger.error({ taskId, err: String(e) }, 'payment task crashed'));
-
+    this.dispatch(job.paymentPoolIndex, taskId);
     this.d.wsHub.publish(frame(jobId, 'queued'));
     return { jobId, status: 'queued', message: 'Payment queued for verification.' };
-  }
-
-  private async runPayment(taskId: string): Promise<void> {
-    const work = this.d.store.getWork(taskId);
-    if (!work) return;
-    const job = this.d.store.getJob(work.jobId);
-    if (!job) return;
-    const worker = this.d.workers[work.poolIndex]!;
-
-    try {
-      this.d.store.setWorkState(taskId, 'running');
-      this.d.store.setJobStatus(job.jobId, 'verifying_payment');
-      this.d.wsHub.publish(frame(job.jobId, 'verifying_payment'));
-
-      const payment = JSON.parse(work.payloadJson) as ContractParams;
-      await broadcastPayment(
-        worker.client,
-        this.d.config.factoryContract,
-        payment,
-        this.d.config.CONFIRMATIONS_PHASE1,
-        (opHash) => {
-          this.d.store.setBroadcast(taskId, opHash);
-          this.d.store.setJobStatus(job.jobId, 'verifying_payment', { paymentTxHash: opHash });
-        },
-      );
-
-      const verified = await verifyPaymentMemo(worker.sdk, job.memo, this.d.config.PAYMENT_AMOUNT_MUTEZ);
-      if (!verified) return this.failPayment(taskId, job.jobId, 'Payment verification failed (memo/amount).');
-
-      // Atomic credit-once: a duplicate memo is a replay/double-pay → reject.
-      if (!this.d.store.tryConsumeMemo(job.memo, job.jobId)) {
-        return this.failPayment(taskId, job.jobId, 'Memo already consumed.');
-      }
-
-      this.d.store.completeWork(taskId, job.jobId, 'payment_confirmed');
-      this.d.wsHub.publish(frame(job.jobId, 'payment_confirmed'));
-      this.d.logger.info({ jobId: job.jobId }, 'payment confirmed');
-    } catch (e) {
-      this.failPayment(taskId, job.jobId, e instanceof Error ? e.message : 'Payment injection failed.');
-    }
-  }
-
-  private failPayment(taskId: string, jobId: string, msg: string): void {
-    this.d.store.setWorkState(taskId, 'failed');
-    this.d.store.setJobStatus(jobId, 'payment_failed', { errorMessage: msg });
-    this.d.wsHub.publish(frame(jobId, 'payment_failed', { error: msg }));
-    this.d.logger.warn({ jobId, msg }, 'payment failed');
   }
 
   // ── /submit-user-transaction ──────────────────────────────────────────────
@@ -160,12 +114,82 @@ export class Processor {
     );
     if (seq === null) throw new HttpError(409, 'Job already consumed (concurrent submit).');
 
-    this.d.queue
-      .enqueue(job.broadcastPoolIndex, () => this.runInject(taskId))
-      .catch((e: unknown) => this.d.logger.error({ taskId, err: String(e) }, 'inject task crashed'));
-
+    this.dispatch(job.broadcastPoolIndex, taskId);
     this.d.wsHub.publish(frame(jobId, 'injecting_user_tx'));
     return { jobId, status: 'injecting_user_tx', message: 'User transaction queued for injection.' };
+  }
+
+  // ── task execution (shared by submit + boot re-hydration) ──────────────────
+  /** Enqueue a task body onto its worker's serial chain. */
+  private dispatch(poolIndex: number, taskId: string): void {
+    this.d.queue
+      .enqueue(poolIndex, () => this.runTask(taskId))
+      .catch((e: unknown) => this.d.logger.error({ taskId, err: String(e) }, 'task crashed'));
+  }
+
+  /** Run a durable work item to completion. Restart-safe + idempotent. Public so
+   *  boot re-hydration can re-enqueue it on the right worker. */
+  async runTask(taskId: string): Promise<void> {
+    const work = this.d.store.getWork(taskId);
+    if (!work || work.state === 'done' || work.state === 'failed') return;
+    if (work.kind === 'inject_payment') return this.runPayment(taskId);
+    if (work.kind === 'inject_user_tx') return this.runInject(taskId);
+  }
+
+  private async runPayment(taskId: string): Promise<void> {
+    const work = this.d.store.getWork(taskId);
+    if (!work) return;
+    const job = this.d.store.getJob(work.jobId);
+    if (!job) return;
+    const worker = this.d.workers[work.poolIndex]!;
+
+    try {
+      this.d.store.setWorkState(taskId, 'running');
+      this.d.store.setJobStatus(job.jobId, 'verifying_payment');
+      this.d.wsHub.publish(frame(job.jobId, 'verifying_payment'));
+
+      // Broadcast — unless a crash-interrupted broadcast already landed.
+      const landed =
+        work.broadcastState !== 'none' &&
+        work.pinnedCounter != null &&
+        (await broadcastAlreadyLanded(worker.client, worker.tezosAddress, work.pinnedCounter));
+      if (!landed) {
+        const counter = await readCounter(worker.client, worker.tezosAddress);
+        this.d.store.setBroadcasting(taskId, counter); // pin BEFORE send
+        const payment = JSON.parse(work.payloadJson) as ContractParams;
+        await broadcastPayment(
+          worker.client,
+          this.d.config.factoryContract,
+          payment,
+          this.d.config.CONFIRMATIONS_PHASE1,
+          (opHash) => {
+            this.d.store.setBroadcast(taskId, opHash);
+            this.d.store.setJobStatus(job.jobId, 'verifying_payment', { paymentTxHash: opHash });
+          },
+        );
+      }
+
+      if (!(await verifyPaymentMemo(worker.sdk, job.memo, this.d.config.PAYMENT_AMOUNT_MUTEZ))) {
+        return this.failPayment(taskId, job.jobId, 'Payment verification failed (memo/amount).');
+      }
+      // tryConsumeMemo is same-job idempotent → safe to re-run on resume.
+      if (!this.d.store.tryConsumeMemo(job.memo, job.jobId)) {
+        return this.failPayment(taskId, job.jobId, 'Memo already consumed.');
+      }
+
+      this.d.store.completeWork(taskId, job.jobId, 'payment_confirmed');
+      this.d.wsHub.publish(frame(job.jobId, 'payment_confirmed'));
+      this.d.logger.info({ jobId: job.jobId }, 'payment confirmed');
+    } catch (e) {
+      this.failPayment(taskId, job.jobId, e instanceof Error ? e.message : 'Payment injection failed.');
+    }
+  }
+
+  private failPayment(taskId: string, jobId: string, msg: string): void {
+    this.d.store.setWorkState(taskId, 'failed');
+    this.d.store.setJobStatus(jobId, 'payment_failed', { errorMessage: msg });
+    this.d.wsHub.publish(frame(jobId, 'payment_failed', { error: msg }));
+    this.d.logger.warn({ jobId, msg }, 'payment failed');
   }
 
   private async runInject(taskId: string): Promise<void> {
@@ -179,14 +203,26 @@ export class Processor {
       this.d.store.setWorkState(taskId, 'running');
       this.d.wsHub.publish(frame(job.jobId, 'injecting_user_tx'));
 
-      const userTransaction = JSON.parse(work.payloadJson) as ContractParams | ContractParams[];
-      const opHash = await injectUserTransaction(
-        worker.client,
-        this.d.config.factoryContract,
-        userTransaction,
-        this.d.config.CONFIRMATIONS_PHASE2,
-        (h) => this.d.store.setBroadcast(taskId, h),
-      );
+      const landed =
+        work.broadcastState !== 'none' &&
+        work.pinnedCounter != null &&
+        (await broadcastAlreadyLanded(worker.client, worker.tezosAddress, work.pinnedCounter));
+
+      let opHash: string;
+      if (landed) {
+        opHash = work.opHash ?? 'recovered-on-restart';
+      } else {
+        const counter = await readCounter(worker.client, worker.tezosAddress);
+        this.d.store.setBroadcasting(taskId, counter); // pin BEFORE send
+        const userTransaction = JSON.parse(work.payloadJson) as ContractParams | ContractParams[];
+        opHash = await injectUserTransaction(
+          worker.client,
+          this.d.config.factoryContract,
+          userTransaction,
+          this.d.config.CONFIRMATIONS_PHASE2,
+          (h) => this.d.store.setBroadcast(taskId, h),
+        );
+      }
 
       this.d.store.completeWork(taskId, job.jobId, 'completed', opHash);
       this.d.wsHub.publish(frame(job.jobId, 'completed', { opHash }));

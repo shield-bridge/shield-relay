@@ -123,7 +123,12 @@ export class SqliteStore implements Store {
       return true;
     } catch (err) {
       if (err instanceof Error && (err as { code?: string }).code?.startsWith('SQLITE_CONSTRAINT')) {
-        return false; // already consumed — replay/double-pay firewall
+        // Already present. If it's OURS (crash-resume re-running the consume step),
+        // treat as success; another job's memo is a replay → reject.
+        const row = this.db
+          .prepare('SELECT jobId FROM consumed_memos WHERE memo = ?')
+          .get(memo) as { jobId: string } | undefined;
+        return row?.jobId === jobId;
       }
       throw err;
     }
