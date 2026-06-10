@@ -175,6 +175,28 @@ describe('dead-letter ops — store layer', () => {
     expect(lock.heartbeatAt).toBeTypeOf('number');
   });
 
+  it('countJobsByStatus + countActiveWorkByPool: status aggregates', () => {
+    const store = freshStore();
+    seedFailed(store, 'inject_payment', 'payment_failed');
+    seedFailed(store, 'inject_user_tx', 'user_tx_failed');
+    seedFailed(store, 'inject_user_tx', 'injecting_user_tx', { workState: 'running' });
+    const queued = seedFailed(store, 'inject_payment', 'queued', { workState: 'failed' });
+    store.setWorkState(queued.taskId, 'queued'); // a live-queued row on pool 0
+
+    const byStatus = new Map(store.countJobsByStatus().map((r) => [r.status, r.count]));
+    expect(byStatus.get('payment_failed')).toBe(1);
+    expect(byStatus.get('user_tx_failed')).toBe(1);
+    expect(byStatus.get('injecting_user_tx')).toBe(1);
+    expect(byStatus.get('queued')).toBe(1);
+
+    // Active = queued|running only (the two failed rows are terminal, excluded).
+    const active = store.countActiveWorkByPool();
+    const pool0 = active.find((a) => a.poolIndex === 0);
+    const pool1 = active.find((a) => a.poolIndex === 1);
+    expect(pool0).toMatchObject({ queued: 1, running: 0 }); // the inject_payment queued row
+    expect(pool1).toMatchObject({ queued: 0, running: 1 }); // the running inject_user_tx
+  });
+
   it('relayLiveness: the load-bearing offline-gate predicate (none / fresh / stale boundary)', () => {
     expect(relayLiveness(undefined, 1_000)).toBeUndefined(); // no lock → not live
     // STALE_MS is 60_000: heartbeat at t=0, now=59s → live; now=60s → stale (reclaimable).

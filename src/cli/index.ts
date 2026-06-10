@@ -9,6 +9,7 @@ import { Command } from 'commander';
 import { start } from './start.js';
 import { init } from './init.js';
 import { doctor } from './doctor.js';
+import { relayStatus } from './status.js';
 import { jobsList, jobsShow, jobsRetry, jobsDiscard } from './jobs.js';
 
 const program = new Command();
@@ -52,6 +53,21 @@ program
       await doctor();
     } catch (e) {
       console.error('doctor failed:', e instanceof Error ? e.message : e);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('status')
+  .description('Health glance at the running relay (liveness, worker gas, queue depth, recent failures)')
+  .option('--watch <seconds>', 'refresh every N seconds until Ctrl-C')
+  .option('--no-chain', 'skip on-chain gas lookups (store-only, faster)')
+  .option('--json', 'machine-readable output')
+  .action(async (opts) => {
+    try {
+      await relayStatus(opts);
+    } catch (e) {
+      console.error('status failed:', e instanceof Error ? e.message : e);
       process.exit(1);
     }
   });

@@ -147,6 +147,12 @@ export interface Store {
   /** Read the lock WITHOUT acquiring/heartbeating it — the CLI's "is a relay live?" probe. */
   getInstanceLock(): InstanceLockRow | undefined;
 
+  // ── status aggregates (read-only; `relay status`) ───────────────────────────
+  /** Job count per status (for the running-relay health glance). */
+  countJobsByStatus(): { status: JobStatus; count: number }[];
+  /** Durable queued/running work per worker — the cross-restart-safe queue depth. */
+  countActiveWorkByPool(): { poolIndex: number; queued: number; running: number }[];
+
   // ── dead-letter ops (the `relay jobs` CLI; mutators are offline-only) ─────────
   /** Filtered work listing (dead-letter view). Ordered (poolIndex, chainSeq). Read-only. */
   listWork(filter: WorkFilter): WorkRow[];

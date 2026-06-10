@@ -281,6 +281,26 @@ export class SqliteStore implements Store {
       .get() as InstanceLockRow | undefined;
   }
 
+  countJobsByStatus(): { status: JobStatus; count: number }[] {
+    return this.db
+      .prepare('SELECT status, COUNT(*) AS count FROM jobs GROUP BY status')
+      .all() as { status: JobStatus; count: number }[];
+  }
+
+  countActiveWorkByPool(): { poolIndex: number; queued: number; running: number }[] {
+    return this.db
+      .prepare(
+        `SELECT poolIndex,
+                SUM(CASE WHEN state = 'queued'  THEN 1 ELSE 0 END) AS queued,
+                SUM(CASE WHEN state = 'running' THEN 1 ELSE 0 END) AS running
+           FROM work_queue
+          WHERE state IN ('queued', 'running')
+          GROUP BY poolIndex
+          ORDER BY poolIndex`,
+      )
+      .all() as { poolIndex: number; queued: number; running: number }[];
+  }
+
   // ── alert outbox ──────────────────────────────────────────────────────────────
   enqueueAlert(id: string, payloadJson: string): void {
     this.db
