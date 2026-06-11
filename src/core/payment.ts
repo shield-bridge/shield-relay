@@ -9,7 +9,8 @@ import { sendSaplingOpCapped } from './broadcast.js';
  * of the XTZ Set contract to the worker's tz1) from the PAYMENT worker's tz1.
  * `onBroadcast` fires with the op hash *after* `.send()` resolves but *before*
  * confirmation, so the caller can durably record the broadcast intent (P2
- * counter-pin) before awaiting confirmation. Returns the op hash.
+ * counter-pin) before awaiting confirmation. Returns the op hash + the level it
+ * was included at (for the post-confirmation applied-check).
  *
  * SECURITY: the caller MUST gate this on {@link verifyPaymentUnshield} first.
  * Broadcasting an unverified op is the original free-injection hole — this
@@ -21,13 +22,42 @@ export async function broadcastPayment(
   payment: ContractParams,
   confirmations: number,
   onBroadcast?: (opHash: string) => void,
-): Promise<string> {
+): Promise<{ hash: string; level: number }> {
   const xtzSetAddress = await resolveSetAddress(client, factoryAddress);
   const setContract = await client.contract.at(xtzSetAddress);
   const op = await sendSaplingOpCapped(client, setContract.methodsObject.default!(payment.txns), 'payment');
   onBroadcast?.(op.hash);
   await op.confirmation(confirmations);
-  return op.hash;
+  return { hash: op.hash, level: op.includedInBlock };
+}
+
+/**
+ * Post-confirmation check: re-read the broadcast payment op from its inclusion block
+ * and require it actually APPLIED and paid >= `expectedMutez` to the worker's tz1.
+ *
+ * This closes the proof-malleability race: two re-randomized unshields spending the
+ * SAME note can both pass the pre-broadcast simulation (note still unspent) and both
+ * get broadcast on different workers; one lands, the OTHER is included as `failed`
+ * (nullifier double-spend). The pre-broadcast gate can't see that — only the on-chain
+ * result can — so without this the failed op would still flip the job to confirmed and
+ * let its Phase 2 inject for free. Reuses {@link sumAppliedTransfersTo}: a `failed`
+ * top-level op contributes nothing, so it fails the check.
+ */
+export async function verifyPaymentLanded(
+  client: TezosToolkit,
+  opHash: string,
+  level: number,
+  workerTz1: string,
+  expectedMutez: bigint,
+): Promise<{ ok: boolean; receivedMutez: bigint }> {
+  const block = (await client.rpc.getBlock({ block: String(level) })) as {
+    operations?: { hash?: string; contents?: SimContent[] }[][];
+  };
+  // Manager operations live in validation pass index 3.
+  const entry = block.operations?.[3]?.find((o) => o.hash === opHash);
+  if (!entry?.contents) return { ok: false, receivedMutez: 0n };
+  const receivedMutez = sumAppliedTransfersTo(entry.contents, workerTz1);
+  return { ok: receivedMutez >= expectedMutez, receivedMutez };
 }
 
 /** The bits of a simulate_operation result we read. Public transparent outputs

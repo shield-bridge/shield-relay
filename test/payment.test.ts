@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { sumAppliedTransfersTo, paymentDigest, type SimContent, type SimInternalResult } from '../src/core/payment.js';
+import {
+  sumAppliedTransfersTo,
+  paymentDigest,
+  verifyPaymentLanded,
+  type SimContent,
+  type SimInternalResult,
+} from '../src/core/payment.js';
+import type { TezosToolkit } from '@tezos-x/octez.js';
 
 const WORKER = 'tz1WorkerOwnPublicKeyHash';
 const ATTACKER = 'tz1AttackerControlledAddress';
@@ -57,6 +64,45 @@ describe('sumAppliedTransfersTo — the payment money-gate', () => {
     ).toBe(0n);
   });
 });
+
+/** A client whose rpc.getBlock returns `block` (the manager-ops pass we care about). */
+function clientWithBlock(block: unknown): TezosToolkit {
+  return { rpc: { getBlock: async () => block } } as unknown as TezosToolkit;
+}
+/** Shape a block whose manager pass (index 3) holds one op `hash` with `contents`. */
+const blockWith = (hash: string, contents: SimContent[]) => ({ operations: [[], [], [], [{ hash, contents }]] });
+
+describe('verifyPaymentLanded — the post-confirmation malleability backstop', () => {
+  const HASH = 'opABC';
+  const applied = (dest: string, amount: string, status = 'applied'): SimContent[] => [
+    { metadata: { operation_result: { status: 'applied' }, internal_operation_results: [{ kind: 'transaction', destination: dest, amount, result: { status } }] } },
+  ];
+
+  it('accepts an APPLIED op that paid the worker >= fee', async () => {
+    const c = clientWithBlock(blockWith(HASH, applied(WORKER, '1000000')));
+    expect(await verifyPaymentLanded(c, HASH, 42, WORKER, 1_000_000n)).toEqual({ ok: true, receivedMutez: 1_000_000n });
+  });
+
+  it('REJECTS a same-note loser whose top-level op landed as failed', async () => {
+    // The malleability race: this op was included but failed (nullifier double-spend).
+    const failed: SimContent[] = [{ metadata: { operation_result: { status: 'failed' }, internal_operation_results: [] } }];
+    expect((await verifyPaymentLanded(c0(failed), HASH, 42, WORKER, 1_000_000n)).ok).toBe(false);
+  });
+
+  it('REJECTS when the op is not found at the level (reorg)', async () => {
+    const c = clientWithBlock({ operations: [[], [], [], [{ hash: 'someOtherOp', contents: applied(WORKER, '1000000') }]] });
+    expect((await verifyPaymentLanded(c, HASH, 42, WORKER, 1_000_000n)).ok).toBe(false);
+  });
+
+  it('REJECTS an applied op that underpaid the worker', async () => {
+    const c = clientWithBlock(blockWith(HASH, applied(WORKER, '999999')));
+    expect((await verifyPaymentLanded(c, HASH, 42, WORKER, 1_000_000n)).ok).toBe(false);
+  });
+});
+
+function c0(contents: SimContent[]): TezosToolkit {
+  return clientWithBlock({ operations: [[], [], [], [{ hash: 'opABC', contents }]] });
+}
 
 describe('paymentDigest — the replay key', () => {
   it('is stable for the same txns', () => {

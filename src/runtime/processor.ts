@@ -10,7 +10,7 @@ import { WsHub } from '../server/wsHub.js';
 import { HttpError } from '../server/errors.js';
 import { frame } from '../server/statusFrames.js';
 import { generateJobSecret, generateMemo, hashJobSecret, checkJobSecret } from '../server/auth.js';
-import { broadcastPayment, verifyPaymentUnshield, paymentDigest } from '../core/payment.js';
+import { broadcastPayment, verifyPaymentUnshield, verifyPaymentLanded, paymentDigest } from '../core/payment.js';
 import { injectUserTransaction } from '../core/inject.js';
 import { quoteFee, checkSubmittedTxCount } from '../core/feeSchedule.js';
 import { readCounter, broadcastAlreadyLanded } from './reconcile.js';
@@ -251,7 +251,7 @@ export class Processor {
         const stopTimer = this.d.metrics.broadcast.startTimer({ kind: 'payment' });
         const counter = await readCounter(worker.client, worker.tezosAddress);
         this.d.store.setBroadcasting(taskId, counter); // pin BEFORE send
-        await broadcastPayment(
+        const { hash, level } = await broadcastPayment(
           worker.client,
           this.d.config.factoryContract,
           payment,
@@ -262,6 +262,19 @@ export class Processor {
           },
         );
         stopTimer();
+
+        // Post-confirmation applied-check — closes the proof-malleability race. The
+        // pre-broadcast simulation can't see a same-note double-spend that two workers
+        // both pass; the LOSER lands on-chain as `failed`. Require the op actually
+        // applied AND paid the worker before flipping the job to confirmed.
+        const onChain = await verifyPaymentLanded(worker.client, hash, level, worker.tezosAddress, expectedMutez);
+        if (!onChain.ok) {
+          return this.failPayment(
+            taskId,
+            job.jobId,
+            `Payment op ${hash} did not apply / underpaid on-chain (${onChain.receivedMutez} mutez to the worker, need >= ${expectedMutez}).`,
+          );
+        }
       }
 
       this.d.store.completeWork(taskId, job.jobId, 'payment_confirmed');
