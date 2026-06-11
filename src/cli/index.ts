@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import '../config/loadEnv.js'; // FIRST: load .env into process.env before any config is read
 import { Command } from 'commander';
 import { start } from './start.js';
 import { init } from './init.js';

@@ -21,8 +21,8 @@ const DEFAULT_FACTORY: Record<(typeof NETWORKS)[number], string> = {
 };
 
 const DEFAULT_RPC: Record<(typeof NETWORKS)[number], string> = {
-  mainnet: 'https://rpc.tzkt.io/mainnet',
-  shadownet: 'https://rpc.shadownet.teztnets.com',
+  mainnet: 'https://tezos-mainnet.octez.io',
+  shadownet: 'https://tezos-shadownet.octez.io',
 };
 
 export const ConfigSchema = z
@@ -59,7 +59,11 @@ export const ConfigSchema = z
     // Low-gas watchdog: warn/alert when a worker's tz1 falls below this (no auto-refill —
     // under unshield payments workers self-fund, so a low balance means seed/misconfig).
     LOW_BALANCE_XTZ: z.coerce.number().nonnegative().default(5),
-    BALANCE_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(6 * 60 * 60 * 1000),
+    BALANCE_CHECK_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(6 * 60 * 60 * 1000),
 
     JOB_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
 
@@ -90,13 +94,16 @@ export const ConfigSchema = z
     // deanonymization-relevant metadata). Set a token to enable it; scrapers then
     // pass `Authorization: Bearer <token>`.
     METRICS_TOKEN: z.string().min(1).optional(),
-    LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+    LOG_LEVEL: z
+      .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
+      .default('info'),
   })
   .transform((c) => ({
     ...c,
     // Resolve network-derived defaults once.
     rpcUrl: c.TEZOS_RPC_URL ?? DEFAULT_RPC[c.TEZOS_NETWORK],
-    factoryContract: c.SHIELD_BRIDGE_CONTRACT ?? DEFAULT_FACTORY[c.TEZOS_NETWORK],
+    factoryContract:
+      c.SHIELD_BRIDGE_CONTRACT ?? DEFAULT_FACTORY[c.TEZOS_NETWORK],
     // Fee schedule params, grouped. base defaults to the flat amount → dark by default.
     fee: {
       baseMutez: c.FEE_BASE_MUTEZ ?? c.PAYMENT_AMOUNT_MUTEZ,
