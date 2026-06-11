@@ -2,8 +2,10 @@
 
 **Status:** relay side IMPLEMENTED (ships dark — `src/core/feeSchedule.ts`, the quote
 at `get-worker-info`, Phase-1 verify against the stored quote, Phase-2 `txCount`
-enforcement). Pending: empirical `perTxMutez` sweep (§6.1) before enabling live, and
-the shield-bridge client adoption (§5.3). Companion to `DESIGN.md` (`shield-relay/1`).
+enforcement). The empirical `perTxMutez` sweep is DONE (§6.1 — recommended `perTxMutez`
+set to 175k) and the shield-bridge V3 client already honors the quoted `paymentAmount` +
+sends `txCount`, so the schedule is READY to enable: an operator opts in by setting the
+non-dark `FEE_*` env values. Companion to `DESIGN.md` (`shield-relay/1`).
 
 > **⚠ Payment mechanics changed (2026-06) — option B.** The fee is no longer a *shielded*
 > transfer redeemed later by `refillWorkerGas`. It is now a **public unshield of the fee
@@ -33,10 +35,11 @@ injects. Measured against the real batch above:
 
 Storage burn is **94% of real cost** and was the term the original "margin is
 90–99%" estimate missed. Every sapling `default` call appends nullifiers,
-commitments, and ciphertexts to contract storage — measured **307–371 bytes per
-sapling tx**, i.e. **0.077–0.093 XTZ per tx** at the protocol's 250 µꜩ/byte.
-Gas + operation bytes add only ~0.005–0.008 XTZ per tx (~1.5 KB and ~31k gas per
-sapling tx; ~82k gas for the XTZ set).
+commitments, and ciphertexts to contract storage. The §6.1 mainnet sweep (50 ops)
+measured **307–838 bytes per sapling tx**, i.e. **0.077–0.21 XTZ per tx** at the
+protocol's 250 µꜩ/byte — bimodal: a ~0.085 XTZ single-input p50 and a heavy tail
+(~0.16–0.21 XTZ) for multi-input / 2-output ops. Gas adds only ~0.005 XTZ per tx
+(~31k gas per sapling tx; ~82k for the XTZ set).
 
 Per-job economics at the flat 1 XTZ fee:
 
@@ -68,7 +71,7 @@ code defaults reproduce today's flat fee exactly (§3.5):
 | Parameter | Value | Rationale |
 | --- | --- | --- |
 | `baseMutez` | 250_000 (0.25 XTZ) | covers Phase-1 payment injection + amortized fee-redemption leg + ops margin |
-| `perTxMutez` | 150_000 (0.15 XTZ) | covers per-tx storage burn (0.077–0.093) + gas with ~60% headroom for note-shape variance |
+| `perTxMutez` | 175_000 (0.175 XTZ) | ≈ p90 per-tx cost from the §6.1 mainnet sweep (storage burn p50 0.085 / p90 0.17 + gas); the heavy tail is real, so this isn't underwater on multi-input ops |
 | `quantumMutez` | 250_000 (0.25 XTZ) | privacy quantization — see §4 |
 
 Resulting tier table (quantize **up**, never down):
@@ -176,7 +179,7 @@ schedule belongs in it:
 ```jsonc
 {
   "protocol": "shield-relay/1",
-  "feeSchedule": { "baseMutez": 250000, "perTxMutez": 150000, "quantumMutez": 250000 }
+  "feeSchedule": { "baseMutez": 250000, "perTxMutez": 175000, "quantumMutez": 250000 }
 }
 ```
 
@@ -193,7 +196,7 @@ schedule by setting the recommended values (§2).
 ```
                        DARK DEFAULT (= today)     RECOMMENDED (opt-in, §2)
 FEE_BASE_MUTEZ         = PAYMENT_AMOUNT_MUTEZ      250_000
-FEE_PER_TX_MUTEZ       = 0                         150_000
+FEE_PER_TX_MUTEZ       = 0                         175_000  (§6.1 sweep)
 FEE_QUANTUM_MUTEZ      = 1   (no quantization)     250_000
 LEGACY_FLAT_MAX_TXS    = 0   (no cap)              5  (see §5)
 ```
@@ -276,13 +279,42 @@ The benefit lands on **two distinct timelines** — don't conflate them:
 So enabling the schedule is safe and griefing-closing on day one regardless of client
 state; the user-facing price drop follows whenever the client ships.
 
+### 6.1 Empirical storage-burn sweep (2026-06) — resolves Q1
+
+Method: 50 applied, storage-bearing sapling operations on a live mainnet Set
+contract (`KT1KzAPQdpziH3bxxJXQNmNQA46oo8tnDQfj`), pulled from TzKT, plus the
+known 10-asset relay batch (`ooRSpM5…`). Per-op figures:
+
+| metric | p50 | p75 | p90 | p95 | max | mean |
+|---|---|---|---|---|---|---|
+| storage (bytes) | 339 | 646 | 678 | 710 | 838 | 428 |
+| storage burn (µtz) | 84,750 | 161,500 | 169,500 | 177,500 | 209,500 | 106,945 |
+| gas used | 30,229 | — | — | — | 81,727 | — |
+
+- **`cost_per_byte = 250 µtz` confirmed** (storageFee ÷ storageUsed = 250 on every op).
+- The distribution is **bimodal**: a ~p50 single-input cluster (~339 B / ~85k µtz) and a
+  heavy tail of multi-input / 2-output ops (~646–838 B / 161k–210k µtz). **26% of real ops
+  burn more than 150,000 µtz in storage alone** — so the original placeholder
+  `perTxMutez = 150k` is underwater for over a quarter of operations.
+- Gas adds only ~5,500 µtz/op (a share of the op-group bakerFee); **storage dominates** (~94%),
+  as the network-design estimate predicted.
+- Per-tx TOTAL cost (storage + gas share): **p50 ≈ 90k, p90 ≈ 175k, max ≈ 215k µtz.**
+- **Phase-1 payment is itself a sapling unshield** (the fee → worker tz1), so it carries the
+  same ~85k+ storage burn. `baseMutez` must cover it (it's the per-job fixed cost), not `perTxMutez`.
+
+**Recommendation (revised): `perTxMutez = 175,000`** (≈ the p90 per-tx cost), keep
+`baseMutez = 250,000` (covers the Phase-1 payment ~90k + op-group overhead + margin) and
+`quantumMutez = 250,000`. Worked fees: n=1 → 0.5, n=5 → 1.25, n=10 → 2.0 XTZ — all comfortably
+above realistic batch cost (n=10 typical ≈ 1.0 XTZ, n=10 heavy ≈ 1.8 XTZ). **Residual:** a
+pathological all-`max`-fragmentation 10-item batch (~2.15 XTZ cost) just exceeds the 2.0 XTZ
+fee; rare and bounded (MAX_INJECT_TXS + the per-op gas cap bound op size), and the base+quantum
+buffer absorbs all non-pathological cases. Tighten only if real all-heavy batches appear.
+
 ## 6. Open questions
 
-1. **Note-shape variance.** The 307–371-byte range comes from one measured
-   operation. 2-output notes (change + payment) sit at the high end; worth
-   measuring a wider sample before locking `perTxMutez = 0.15`. The one
-   unverified economic input flagged in the network design doc applies here
-   too: an empirical sweep over note shapes would firm up the constant.
+1. ~~**Note-shape variance.**~~ **Resolved — see §6.1.** A 50-op mainnet sweep showed a
+   bimodal 76,750–209,500 µtz storage-burn range (not the original single 307–371-byte
+   sample); `perTxMutez` raised 150k → **175k** (≈p90) so the heavy tail isn't underwater.
 2. **XTZ vs FA-token pools.** The measured op mixed pools; gas differs (XTZ
    set ~82k vs ~31k) but storage — the dominant term — does not vary much by
    pool. Proposal treats all pools identically; revisit only if a measured
