@@ -4,6 +4,16 @@
 at `get-worker-info`, Phase-1 verify against the stored quote, Phase-2 `txCount`
 enforcement). Pending: empirical `perTxMutez` sweep (§6.1) before enabling live, and
 the shield-bridge client adoption (§5.3). Companion to `DESIGN.md` (`shield-relay/1`).
+
+> **⚠ Payment mechanics changed (2026-06) — option B.** The fee is no longer a *shielded*
+> transfer redeemed later by `refillWorkerGas`. It is now a **public unshield of the fee
+> straight to the worker's tz1**, verified BEFORE broadcast. So: the worker is paid in
+> spendable tz1 XTZ on the spot (no shielded balance accrues, no redemption leg), and
+> **`refillWorkerGas`/gas-refill is gone** — workers self-fund because each fee already
+> lands on tz1. The §ROI/redemption discussion below that assumes a shielded fee +
+> unshield-to-realize is superseded; the quote *amounts* (base/per-tx/quantum) are
+> unchanged. The fee collection is now PUBLIC (worker tz1 receipts are observable; the
+> sapling spender stays private). The code is the source of truth.
 **Source data:** mainnet operation [`ooRSpM5TDKpr1SEchYaxhJgFQQrzGB1sTZWLZXauMV49kr5AhkZ`](https://tzkt.io/ooRSpM5TDKpr1SEchYaxhJgFQQrzGB1sTZWLZXauMV49kr5AhkZ) — a real 10-asset relay batch (20 contents) that collected the flat 1 XTZ fee.
 
 ---

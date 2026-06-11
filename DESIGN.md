@@ -2,6 +2,31 @@
 
 *Lead-architect synthesis of 5 design lenses + 3 red-teams, **verified against `shield-bridge-sdk` source**, the Lambda code, and this scaffold. 2026-06-09. Supersedes the earlier draft.*
 
+> **⚠ SUPERSEDED IN PART — read this first (2026-06).** The payment model below (a
+> *shielded* 1-XTZ transfer carrying a *memo*, verified after broadcast) was replaced by
+> **option B**: Phase-1 payment is now a **public unshield of the fee to the worker's
+> tz1, verified BEFORE broadcast** by a node simulation (`verifyPaymentUnshield` →
+> `simulateOperation`, reading the contract's `internal_operation_results`). No memo; the
+> replay guard is a sha256 of the payment bytes; a post-confirmation applied-check closes
+> the same-note malleability race. Knock-on changes that invalidate sections below:
+> - **No Sapling proving in the relay.** It only simulates + signs (pure octez.js), so the
+>   per-worker `ShieldBridgeSDK`, `parallelThreads:true`, `worker_threads`, the ~49 MB
+>   proving params, and the **~1.2–1.5 GB/worker RAM model + `MAX_CONCURRENT_PROOFS`** are
+>   GONE. A worker is now just `{ index, tezosAddress, client }`; the image is a slim
+>   broadcaster (mem sized ~256–512 MB).
+> - **Gas-refill removed.** Fees land directly as public tz1 XTZ, so workers self-fund;
+>   the `gas_refill` WorkKind + `refillScheduler` are replaced by a read-only low-gas
+>   *watchdog* alert. (`WORKER_FLOAT_CAP`/`SWEEP_ADDRESS` → a future tz1→treasury sweep.)
+> - **Two-worker unlinkability:** Phase 1 (payment) and Phase 2 (broadcast) run on
+>   *distinct* workers so the public fee receipt can't be paired with the user's op.
+> - **WS/transport hardening:** heartbeat reaper, `MAX_CONNECTIONS`, enforced
+>   `RATE_LIMIT_RPM` (+ `TRUST_PROXY`).
+>
+> `shield-relay/1` is now a wire PROTOCOL with two implementations (this container + the
+> AWS serverless relay). **The code is the source of truth**; the rationale below is kept
+> as the historical design record (the SDK/RAM/refill/per-worker-mutex reasoning still
+> explains *why* the scaffold was shaped as it was).
+
 > **Status correction (read first):** one design-agent finding claimed the in-tree backend "has no jobSecret and broadcasts Phase-2 from the same worker," contradicting "Phase 0 enforced." That is an artifact of the agents reading the **v3 checkout**, whose `infrastructure/serverless` never received the Phase 0 *backend* merge (Phase 0 landed on `main`). **Phase 0 is live + enforced on mainnet** — verified `401`(no secret)/`403`(wrong)/`409`(right) against `api.shieldbridge.xyz`. The migration gate below still holds: freeze the reference wire from the **live prod relay**, not from a checkout.
 
 ---
