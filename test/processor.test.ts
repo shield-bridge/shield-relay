@@ -15,7 +15,7 @@ function makeProcessor(job: Partial<JobRow>, legacyFlatMaxTxs = 0): Processor {
     config: { REQUIRE_JOB_SECRET: false, legacyFlatMaxTxs },
     store: { getJob: () => full, enqueueWork: () => 1 },
     queue: { enqueue: () => Promise.resolve() },
-    workers: [{ saplingAddress: 'zet1' }],
+    workers: [{ index: 0, tezosAddress: 'tz1' }],
     wsHub: { publish: () => undefined },
     logger: { info: () => undefined, warn: () => undefined, error: () => undefined },
     metrics: {},

@@ -9,7 +9,6 @@ import { Processor } from '../runtime/processor.js';
 import { buildServer } from '../server/server.js';
 import { buildRelayInfo } from '../server/info.js';
 import { rehydrate } from '../runtime/rehydrate.js';
-import { startSaplingParamsServer, type ParamsServer } from '../runtime/saplingParamsServer.js';
 import { ensureWorkersRevealed } from '../core/reveal.js';
 import { startBalanceMonitor } from '../observability/balanceMonitor.js';
 import { acquireInstanceLock } from '../runtime/instanceLock.js';
@@ -51,20 +50,8 @@ export async function start(): Promise<void> {
 
   const secrets = loadPoolSecrets(cfg);
 
-  // Resolve sapling params. Node's fetch() can't read file:// and the SDK's on-disk
-  // fallback uses __filename (undefined under ESM), so unless an http(s) URL is already
-  // configured we serve the bundled params over loopback and point the SDK at it. This
-  // makes proving work in EVERY run mode (relay start / npm start / dev), not just the
-  // Docker entrypoint. (A configured http URL — e.g. Docker's sidecar — is left as-is.)
-  let paramsServer: ParamsServer | undefined;
-  let saplingParamsUrl = cfg.SAPLING_PARAMS_URL;
-  if (!saplingParamsUrl || saplingParamsUrl.startsWith('file:')) {
-    paramsServer = await startSaplingParamsServer(logger);
-    saplingParamsUrl = paramsServer.url;
-  }
-
-  logger.info('building worker pool — loading sapling params, may take a moment…');
-  const workers = await buildPool({ ...cfg, SAPLING_PARAMS_URL: saplingParamsUrl }, secrets);
+  // Workers are pure tz1 broadcasters now (no Sapling SDK, no proving params).
+  const workers = await buildPool(cfg, secrets);
   logger.info(
     { workers: workers.map((w) => ({ index: w.index, tz1: w.tezosAddress })) },
     'worker pool ready',
@@ -109,7 +96,6 @@ export async function start(): Promise<void> {
     try {
       await app.close(); // stop new HTTP + WS
       await queue.drain(); // let in-flight per-worker tasks finish
-      paramsServer?.close();
       lock.release();
       store.close();
     } finally {

@@ -36,10 +36,8 @@ services:
     env_file:
       - .env
 
-    # SAPLING_PARAMS_URL is set INSIDE the image — the params are baked AND served
-    # on a loopback HTTP server (Node 22 fetch() can't read file:// URLs, which is
-    # how the SDK loads them), so the operator must NOT set it. DATA_DIR is fixed
-    # to the volume mount; POOL_FILE points at the read-only secret mount.
+    # DATA_DIR is fixed to the volume mount; POOL_FILE points at the read-only secret
+    # mount. (No Sapling params: the relay is a pure tz1 broadcaster, it never proves.)
     environment:
       DATA_DIR: /data
       POOL_FILE: /run/secrets/pool.json
@@ -60,9 +58,8 @@ services:
     healthcheck:
       # /readyz is 200 only after the pool is built and not draining. Uses node's
       # built-in fetch (no external binary needed; matches the image HEALTHCHECK
-      # style). PORT is fixed to 8080 in-container. ~180s start_period because
-      # building the pool loads ~50 MB of Sapling params per worker AND derives
-      # each worker's shielded address.
+      # style). PORT is fixed to 8080 in-container. Short start_period — building the
+      # pool just derives each worker's tz1 (no proving params to load).
       # NOTE: /readyz returns 503 during the graceful drain, so on `docker stop`
       # the container briefly shows (unhealthy) for the drain window. That is
       # cosmetic — restart: unless-stopped does NOT restart on unhealthy. Do not
@@ -71,14 +68,13 @@ services:
       interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 180s
+      start_period: 30s
 
-    # Each ACTIVE worker pins a full Sapling proving context (~1.2–1.5 GB RAM).
-    # Defaults below are sized for WORKER_COUNT=1. For N workers, raise the
-    # reservation/limit to ≈ 1.5 GB × N (+ ~0.5 GB headroom for node/sqlite).
-    mem_reservation: ${MEM_RESERVATION:-1500m}
-    mem_limit: ${MEM_LIMIT:-2g}
-    # Give the WASM prover headroom before the OOM killer fires.
+    # The relay is a lightweight tz1 broadcaster — no Sapling proving, no worker_threads.
+    # A node + better-sqlite3 + octez.js process is modest and barely grows with
+    # WORKER_COUNT (each worker is just another RPC client + signer).
+    mem_reservation: ${MEM_RESERVATION:-256m}
+    mem_limit: ${MEM_LIMIT:-512m}
     oom_kill_disable: false
 
     # Defence in depth — the relay never writes outside /data, and pool.json is

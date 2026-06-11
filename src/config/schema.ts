@@ -53,8 +53,6 @@ export const ConfigSchema = z
     DATABASE_URL: z.string().optional(),
     ALLOW_NETWORK_FS: bool.default('false'),
 
-    SAPLING_PARAMS_URL: z.string().optional(), // file:///opt/sapling-params/ in the image
-
     CONFIRMATIONS_PHASE1: z.coerce.number().int().positive().default(2),
     CONFIRMATIONS_PHASE2: z.coerce.number().int().positive().default(1),
 

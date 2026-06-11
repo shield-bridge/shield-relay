@@ -1,13 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { TezosToolkit } from '@tezos-x/octez.js';
 import { InMemorySigner } from '@tezos-x/octez.js-signer';
-import { ShieldBridgeSDK } from 'shield-bridge-sdk';
 import type { Config } from '../config/schema.js';
 
 export interface WorkerSecret {
-  saplingMnemonic: string;
+  /** tz1 secret key — the worker signs, pays gas, and receives fees with this. */
   tezosSecretKey: string;
-  /** Optional — derived authoritatively from the mnemonic at start if absent. */
+  /** Vestigial under the unshield-payment model (workers never touch a sapling account).
+   *  Accepted for back-compat with existing pool files; ignored at runtime. */
+  saplingMnemonic?: string;
   saplingAddress?: string;
 }
 export interface PoolSecrets {
@@ -17,10 +18,8 @@ export interface PoolSecrets {
 export interface Worker {
   /** Physical pool index — the WorkerQueue mutex key. */
   index: number;
-  saplingAddress: string;
-  /** tz1 — the public key hash that signs + pays gas for this worker's ops. */
+  /** tz1 — the public key hash that signs + pays gas for, and receives fees on, this worker. */
   tezosAddress: string;
-  sdk: ShieldBridgeSDK;
   client: TezosToolkit;
 }
 
@@ -41,14 +40,12 @@ export function loadPoolSecrets(cfg: Config): PoolSecrets {
 }
 
 /**
- * Build N worker contexts. Each worker gets its OWN ShieldBridgeSDK with
- * `parallelThreads: true` — i.e. an isolated worker_threads Sapling proving
- * context. This is non-negotiable: `parallelThreads: false` aliases every SDK to
- * one process-global singleton sapling core, so concurrent workers would corrupt
- * each other's spending keys (DESIGN.md §1).
- *
- * After build, every cross-WORKER proof is safe to run concurrently; same-worker
- * ops are still serialized by the WorkerQueue (counter/notes).
+ * Build N worker contexts. Under the unshield-payment model a worker is just a tz1
+ * BROADCASTER: it signs + pays gas for Phase-1/Phase-2 ops and receives fees on its
+ * tz1. It never proves or touches a sapling account — so there is no per-worker
+ * ShieldBridgeSDK, no worker_threads, and no Sapling proving params; just an octez.js
+ * client bound to the worker's signer. (Verification is a node simulation, broadcast is
+ * a plain contract call — both pure octez.js.)
  */
 export async function buildPool(cfg: Config, secrets: PoolSecrets): Promise<Worker[]> {
   const n = Math.min(cfg.WORKER_COUNT, secrets.addresses.length);
@@ -59,23 +56,7 @@ export async function buildPool(cfg: Config, secrets: PoolSecrets): Promise<Work
     const signer = await InMemorySigner.fromSecretKey(s.tezosSecretKey);
     client.setSignerProvider(signer);
     const tezosAddress = await signer.publicKeyHash();
-
-    // Assert the secret key matches the advertised tz1 before it can spend gas.
-    const sdk = new ShieldBridgeSDK({
-      client,
-      saplingMnemonic: s.saplingMnemonic,
-      tzktApi: cfg.TEZOS_NETWORK,
-      shieldBridgeContract: cfg.factoryContract,
-      parallelThreads: true,
-      ...(cfg.SAPLING_PARAMS_URL ? { saplingParamsUrl: cfg.SAPLING_PARAMS_URL } : {}),
-    });
-    await sdk.ready;
-
-    // Derive the sapling payment address authoritatively from the mnemonic
-    // (never trust a possibly-stale stored value).
-    const saplingAddress = await sdk.getShieldedAddress();
-
-    workers.push({ index: i, saplingAddress, tezosAddress, sdk, client });
+    workers.push({ index: i, tezosAddress, client });
   }
   if (workers.length === 0) throw new Error('Pool is empty after build.');
   return workers;
