@@ -69,7 +69,18 @@ export async function start(): Promise<void> {
   rehydrate(store, queue, processor, logger);
 
   let ready = false;
-  const app = await buildServer({ processor, wsHub, metrics, info: buildRelayInfo(cfg), metricsToken: cfg.METRICS_TOKEN, isReady: () => ready });
+  const app = await buildServer({
+    processor,
+    wsHub,
+    metrics,
+    info: buildRelayInfo(cfg),
+    metricsToken: cfg.METRICS_TOKEN,
+    rateLimitRpm: cfg.RATE_LIMIT_RPM,
+    maxConnections: cfg.MAX_CONNECTIONS,
+    wsHeartbeatMs: cfg.WS_HEARTBEAT_MS,
+    trustProxy: cfg.TRUST_PROXY,
+    isReady: () => ready,
+  });
   await app.listen({ port: cfg.PORT, host: '0.0.0.0' });
   ready = true;
   logger.info({ port: cfg.PORT }, 'shield-relay listening');

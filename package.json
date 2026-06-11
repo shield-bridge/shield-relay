@@ -24,6 +24,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@fastify/rate-limit": "^10.2.1",
     "@tezos-x/octez.js": "^1.0.0",
     "@tezos-x/octez.js-signer": "^1.0.0",
     "better-sqlite3": "^11.8.0",

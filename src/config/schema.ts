@@ -64,7 +64,15 @@ export const ConfigSchema = z
     JOB_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
 
     PORT: z.coerce.number().int().positive().default(8080),
+    // Per-IP HTTP request cap (enforced via @fastify/rate-limit) and a hard ceiling on
+    // concurrent WebSocket connections (the upgrade handler rejects past it).
     RATE_LIMIT_RPM: z.coerce.number().int().positive().default(120),
+    MAX_CONNECTIONS: z.coerce.number().int().positive().default(2000),
+    WS_HEARTBEAT_MS: z.coerce.number().int().positive().default(30_000),
+    // Set true ONLY behind a trusted reverse proxy (e.g. the compose Caddy) so the
+    // rate limiter keys on X-Forwarded-For. Leave false when 8080 is exposed directly
+    // (else a client could spoof XFF to dodge the per-IP limit).
+    TRUST_PROXY: bool.default('false'),
 
     DRAIN_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
     RETAIN_CLIENT_IPS: bool.default('false'),

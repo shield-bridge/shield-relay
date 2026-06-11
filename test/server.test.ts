@@ -27,6 +27,10 @@ describe('buildServer (boot + hook ordering)', () => {
       processor: stubProcessor,
       wsHub: stubWsHub,
       metrics: stubMetrics,
+      rateLimitRpm: 120,
+      maxConnections: 2000,
+      wsHeartbeatMs: 30_000,
+      trustProxy: false,
       isReady: () => ready,
     });
     close = () => app.close();
@@ -56,6 +60,10 @@ describe('buildServer (boot + hook ordering)', () => {
       wsHub: stubWsHub,
       metrics: stubMetrics,
       metricsToken: 's3cret',
+      rateLimitRpm: 120,
+      maxConnections: 2000,
+      wsHeartbeatMs: 30_000,
+      trustProxy: false,
       isReady: () => true,
     });
     close = () => app.close();

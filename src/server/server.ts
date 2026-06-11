@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance } from 'fastify';
-import { WebSocketServer } from 'ws';
+import rateLimit from '@fastify/rate-limit';
+import { WebSocketServer, type WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import type { Processor } from '../runtime/processor.js';
@@ -18,6 +19,14 @@ export interface ServerDeps {
   /** When unset, /metrics is disabled (404). When set, scrapers must send
    *  `Authorization: Bearer <token>`. Keeps per-worker gas/queue metadata private. */
   metricsToken?: string | undefined;
+  /** Per-IP HTTP request cap per minute (@fastify/rate-limit). */
+  rateLimitRpm: number;
+  /** Hard ceiling on concurrent WebSocket connections (upgrade rejected past it). */
+  maxConnections: number;
+  /** WS ping/reaper interval (ms): a socket that misses a round is terminated. */
+  wsHeartbeatMs: number;
+  /** Trust X-Forwarded-For for req.ip (rate-limit keying) — true ONLY behind a proxy. */
+  trustProxy: boolean;
   isReady: () => boolean;
 }
 
@@ -26,7 +35,16 @@ export interface ServerDeps {
  * HTTP `upgrade` event (one port = one ingress rule on every host).
  */
 export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
-  const app = Fastify({ logger: false, bodyLimit: 5 * 1024 * 1024 });
+  const app = Fastify({ logger: false, bodyLimit: 5 * 1024 * 1024, trustProxy: deps.trustProxy });
+
+  // Per-IP HTTP rate limit. Loopback is allow-listed so container/compose health
+  // probes (polled every ~30s from 127.0.0.1) are never throttled. WS upgrades
+  // bypass Fastify routing, so they're bounded by maxConnections (below) instead.
+  await app.register(rateLimit, {
+    max: deps.rateLimitRpm,
+    timeWindow: '1 minute',
+    allowList: ['127.0.0.1', '::1'],
+  });
 
   // Permissive CORS — the web client deploys to many origins (IPFS gateways,
   // custom domains). The relay exposes no credentialed/cookie surface.
@@ -69,14 +87,40 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   // BEFORE app.ready() — Fastify throws FST_ERR_INSTANCE_ALREADY_LISTENING on any
   // addHook once the instance has started (ready() flips that state, not listen()).
   const wss = new WebSocketServer({ noServer: true });
+  // Liveness set: a socket is "alive" from connect and again on every pong. The reaper
+  // terminates any socket that missed the last round — half-open/dead connections that
+  // would otherwise leak into the hub's subscriber map (and leak memory) forever.
+  const alive = new WeakSet<WebSocket>();
+  const heartbeat = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (!alive.has(ws)) {
+        ws.terminate();
+        continue;
+      }
+      alive.delete(ws);
+      ws.ping();
+    }
+  }, deps.wsHeartbeatMs);
+  heartbeat.unref(); // never keep the process alive solely for the reaper
+
   app.addHook('onClose', async () => {
+    clearInterval(heartbeat);
     wss.close();
   });
 
   await app.ready();
 
   app.server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
-    wss.handleUpgrade(req, socket, head, (ws) => deps.wsHub.handleConnection(ws));
+    // Hard cap concurrent sockets — bounds an unauthenticated upgrade-flood DoS.
+    if (wss.clients.size >= deps.maxConnections) {
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      alive.add(ws);
+      ws.on('pong', () => alive.add(ws));
+      deps.wsHub.handleConnection(ws);
+    });
   });
 
   return app;
