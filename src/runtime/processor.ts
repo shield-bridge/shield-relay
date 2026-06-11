@@ -10,7 +10,7 @@ import { WsHub } from '../server/wsHub.js';
 import { HttpError } from '../server/errors.js';
 import { frame } from '../server/statusFrames.js';
 import { generateJobSecret, generateMemo, hashJobSecret, checkJobSecret } from '../server/auth.js';
-import { broadcastPayment, verifyPaymentUnshield, verifyPaymentLanded, paymentDigest } from '../core/payment.js';
+import { broadcastPayment, verifyPaymentUnshield, verifyPaymentLanded, verifyPaymentLandedByScan, paymentDigest } from '../core/payment.js';
 import { injectUserTransaction } from '../core/inject.js';
 import { quoteFee, checkSubmittedTxCount } from '../core/feeSchedule.js';
 import { readCounter, broadcastAlreadyLanded } from './reconcile.js';
@@ -22,6 +22,10 @@ const MAX_TX_COUNT = 256; // sanity bound on a fee quote request
 // of the fee config. The client's BATCH_MAX_ITEMS is 10; this leaves headroom for
 // note-management splits while bounding worst-case storage-burn loss from abuse.
 const MAX_INJECT_TXS = 32;
+// How many recent blocks the resume path scans for a broadcast payment op's hash to
+// recover its applied-status (we don't persist the inclusion level). Generous for a
+// prompt restart; the scan stops at the first match so the typical cost is 1-2 blocks.
+const RESUME_SCAN_DEPTH = 60;
 
 export interface ProcessorDeps {
   config: Config;
@@ -217,14 +221,17 @@ export class Processor {
         work.pinnedCounter != null &&
         (await broadcastAlreadyLanded(worker.client, worker.tezosAddress, work.pinnedCounter));
 
+      // Binding fee this payment must clear (legacy or scheduled quote; the fallback
+      // covers a pre-fee-schedule job row with a null quote). Needed by both branches.
+      const expectedMutez = BigInt(job.quotedFeeMutez ?? Number(this.d.config.PAYMENT_AMOUNT_MUTEZ));
+
       if (!landed) {
         // ── THE FIREWALL: verify BEFORE broadcast ─────────────────────────────
         // Simulate the submitted op and require it unshields >= the binding fee to
         // THIS worker's own tz1. An op that pays anyone else (or pays nothing) is
         // rejected here, having spent zero gas — a dry run, not a broadcast. This is
         // what stops a hijacker getting the relay to inject an op of their choosing
-        // for free. The fallback fee covers a pre-fee-schedule job row (null quote).
-        const expectedMutez = BigInt(job.quotedFeeMutez ?? Number(this.d.config.PAYMENT_AMOUNT_MUTEZ));
+        // for free.
         const { ok, receivedMutez } = await verifyPaymentUnshield(
           worker.client,
           this.d.config.factoryContract,
@@ -274,6 +281,35 @@ export class Processor {
             job.jobId,
             `Payment op ${hash} did not apply / underpaid on-chain (${onChain.receivedMutez} mutez to the worker, need >= ${expectedMutez}).`,
           );
+        }
+      } else {
+        // RESUME after a crash in the send→confirmation window: the op advanced the
+        // counter (landed) but was never applied-checked in its prior life. A malleable
+        // same-note loser lands as `failed`, so recover its status by scanning recent
+        // blocks for the op hash before confirming (we don't persist the level; the op is
+        // recent after a prompt restart). Not found in the window (long downtime) ⟹ accept
+        // with a log — the residual then needs an active attack AND a long outage.
+        if (work.opHash) {
+          const scanned = await verifyPaymentLandedByScan(
+            worker.client,
+            work.opHash,
+            worker.tezosAddress,
+            expectedMutez,
+            RESUME_SCAN_DEPTH,
+          );
+          if (scanned.checked && !scanned.ok) {
+            return this.failPayment(
+              taskId,
+              job.jobId,
+              `Resumed payment op ${work.opHash} did not apply / underpaid on-chain (${scanned.receivedMutez} mutez to the worker, need >= ${expectedMutez}).`,
+            );
+          }
+          if (!scanned.checked) {
+            this.d.logger.warn(
+              { jobId: job.jobId, opHash: work.opHash },
+              'resumed payment op not found in scan window — accepting (deep-downtime residual)',
+            );
+          }
         }
       }
 

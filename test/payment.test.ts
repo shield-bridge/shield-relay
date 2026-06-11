@@ -3,6 +3,7 @@ import {
   sumAppliedTransfersTo,
   paymentDigest,
   verifyPaymentLanded,
+  verifyPaymentLandedByScan,
   type SimContent,
   type SimInternalResult,
 } from '../src/core/payment.js';
@@ -103,6 +104,43 @@ describe('verifyPaymentLanded — the post-confirmation malleability backstop', 
 function c0(contents: SimContent[]): TezosToolkit {
   return clientWithBlock({ operations: [[], [], [], [{ hash: 'opABC', contents }]] });
 }
+
+describe('verifyPaymentLandedByScan — resume-path recovery (no persisted level)', () => {
+  const HASH = 'opRESUME';
+  const tx = (dest: string, amount: string, status = 'applied'): SimContent[] => [
+    { metadata: { operation_result: { status: 'applied' }, internal_operation_results: [{ kind: 'transaction', destination: dest, amount, result: { status } }] } },
+  ];
+  /** client whose head is at `headLevel` and whose block at `opLevel` holds `contents`. */
+  function scanClient(headLevel: number, opLevel: number, contents: SimContent[]): TezosToolkit {
+    return {
+      rpc: {
+        getBlockHeader: async () => ({ level: headLevel }),
+        getBlock: async ({ block }: { block: string }) =>
+          Number(block) === opLevel
+            ? { operations: [[], [], [], [{ hash: HASH, contents }]] }
+            : { operations: [[], [], [], []] },
+      },
+    } as unknown as TezosToolkit;
+  }
+
+  it('finds an applied op a few blocks back and accepts (checked + ok)', async () => {
+    const c = scanClient(100, 98, tx(WORKER, '1000000'));
+    expect(await verifyPaymentLandedByScan(c, HASH, WORKER, 1_000_000n, 60)).toEqual({ checked: true, ok: true, receivedMutez: 1_000_000n });
+  });
+
+  it('finds a FAILED loser in the window and rejects (checked + !ok)', async () => {
+    const failed: SimContent[] = [{ metadata: { operation_result: { status: 'failed' }, internal_operation_results: [] } }];
+    const c = scanClient(100, 97, failed);
+    const r = await verifyPaymentLandedByScan(c, HASH, WORKER, 1_000_000n, 60);
+    expect(r.checked).toBe(true);
+    expect(r.ok).toBe(false);
+  });
+
+  it('returns checked:false when the op is older than the scan window (long downtime)', async () => {
+    const c = scanClient(100, 20, tx(WORKER, '1000000')); // 80 blocks back, depth 60
+    expect((await verifyPaymentLandedByScan(c, HASH, WORKER, 1_000_000n, 60)).checked).toBe(false);
+  });
+});
 
 describe('paymentDigest — the replay key', () => {
   it('is stable for the same txns', () => {

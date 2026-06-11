@@ -60,6 +60,36 @@ export async function verifyPaymentLanded(
   return { ok: receivedMutez >= expectedMutez, receivedMutez };
 }
 
+/**
+ * Resume-path applied-check: like {@link verifyPaymentLanded} but recovers the inclusion
+ * level by SCANNING back from head for `opHash` (we don't persist the level). Used when a
+ * crash in the send→confirmation window leaves a job `landed` (counter advanced) but never
+ * applied-checked — a malleable same-note loser would have landed as `failed`. Scans up to
+ * `maxDepth` recent blocks (the op is recent after a prompt restart), stopping at the first
+ * match. `checked:false` ⟹ the op is older than the window (long downtime) — the caller
+ * accepts with a log (the residual then needs an active attack AND a long outage: negligible).
+ */
+export async function verifyPaymentLandedByScan(
+  client: TezosToolkit,
+  opHash: string,
+  workerTz1: string,
+  expectedMutez: bigint,
+  maxDepth: number,
+): Promise<{ checked: boolean; ok: boolean; receivedMutez: bigint }> {
+  const header = (await client.rpc.getBlockHeader()) as { level: number };
+  for (let level = header.level; level > header.level - maxDepth && level > 0; level--) {
+    const block = (await client.rpc.getBlock({ block: String(level) })) as {
+      operations?: { hash?: string; contents?: SimContent[] }[][];
+    };
+    const entry = block.operations?.[3]?.find((o) => o.hash === opHash);
+    if (entry?.contents) {
+      const receivedMutez = sumAppliedTransfersTo(entry.contents, workerTz1);
+      return { checked: true, ok: receivedMutez >= expectedMutez, receivedMutez };
+    }
+  }
+  return { checked: false, ok: false, receivedMutez: 0n };
+}
+
 /** The bits of a simulate_operation result we read. Public transparent outputs
  *  only — no sapling decryption is ever needed to verify a payment. */
 export interface SimInternalResult {
