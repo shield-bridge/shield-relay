@@ -62,11 +62,11 @@ export async function doctor(): Promise<void> {
         const signer = await InMemorySigner.fromSecretKey(s.tezosSecretKey);
         const tz1 = await signer.publicKeyHash();
         const balXtz = (await client.tz.getBalance(tz1)).toNumber() / 1_000_000;
-        const status: Status = balXtz >= cfg.GAS_REFILL_THRESHOLD_XTZ ? 'ok' : 'warn';
+        const status: Status = balXtz >= cfg.LOW_BALANCE_XTZ ? 'ok' : 'warn';
         add(
           `worker ${i} gas`,
           status,
-          `${tz1}  ${balXtz.toFixed(3)} XTZ${status === 'warn' ? `  (< ${cfg.GAS_REFILL_THRESHOLD_XTZ} — fund it)` : ''}`,
+          `${tz1}  ${balXtz.toFixed(3)} XTZ${status === 'warn' ? `  (< ${cfg.LOW_BALANCE_XTZ} — fund it)` : ''}`,
         );
       } catch (e) {
         add(`worker ${i}`, 'fail', `bad key: ${e instanceof Error ? e.message : 'invalid'}`);

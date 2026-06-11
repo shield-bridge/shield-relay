@@ -3,8 +3,8 @@
  *
  * One single-concurrency promise-chain mutex per PHYSICAL tz1 (pool index). Every
  * operation that touches a worker's tz1 account counter or its Sapling notes —
- * Phase-1 payment injection, Phase-2 broadcast (when that tz1 is the broadcast
- * worker), and gas-refill — MUST be enqueued here on that worker's poolIndex.
+ * Phase-1 payment injection and Phase-2 broadcast (when that tz1 is the broadcast
+ * worker) — MUST be enqueued here on that worker's poolIndex.
  *
  * Because a single process owns all workers, this is a strictly stronger
  * guarantee than the AWS SQS-FIFO MessageGroupId=worker-N: there is no
@@ -13,7 +13,7 @@
  *
  * Keyed on the PHYSICAL tz1 (pool index), NOT a payment/broadcast role — so a
  * single tz1 serving as one job's payment worker and another's broadcast worker
- * (plus its own gas-refill) is still strictly serialized.
+ * is still strictly serialized.
  *
  * NOTE: cross-WORKER concurrency (different pool indices) is only safe because
  * each worker's SDK runs with parallelThreads:true (isolated worker_threads

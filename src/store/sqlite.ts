@@ -64,7 +64,7 @@ CREATE TABLE IF NOT EXISTS work_queue (
 );
 CREATE INDEX IF NOT EXISTS work_queue_rehydrate ON work_queue(state, poolIndex, chainSeq);
 
--- Durable, retrying critical alerts (low balance, refill failed).
+-- Durable, retrying critical alerts (e.g. worker low gas balance).
 CREATE TABLE IF NOT EXISTS alert_outbox (
   id            TEXT PRIMARY KEY,
   payloadJson   TEXT NOT NULL,

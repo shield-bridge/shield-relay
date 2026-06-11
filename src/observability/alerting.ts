@@ -14,7 +14,7 @@ const BACKOFF_MS = [0, 30_000, 120_000, 600_000, 3_600_000];
 const MAX_ATTEMPTS = BACKOFF_MS.length;
 
 /**
- * Durable, retrying alerter. Critical conditions (low balance, refill failed) are
+ * Durable, retrying alerter. Critical conditions (e.g. a worker's low gas balance) are
  * persisted to `alert_outbox` and delivered to ALERT_WEBHOOK_URL with backoff, so
  * a transient webhook outage doesn't lose the alert. Always logged regardless.
  */

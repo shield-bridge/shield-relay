@@ -58,8 +58,10 @@ export const ConfigSchema = z
     CONFIRMATIONS_PHASE1: z.coerce.number().int().positive().default(2),
     CONFIRMATIONS_PHASE2: z.coerce.number().int().positive().default(1),
 
-    GAS_REFILL_THRESHOLD_XTZ: z.coerce.number().nonnegative().default(5),
-    GAS_REFILL_INTERVAL_MS: z.coerce.number().int().positive().default(6 * 60 * 60 * 1000),
+    // Low-gas watchdog: warn/alert when a worker's tz1 falls below this (no auto-refill —
+    // under unshield payments workers self-fund, so a low balance means seed/misconfig).
+    LOW_BALANCE_XTZ: z.coerce.number().nonnegative().default(5),
+    BALANCE_CHECK_INTERVAL_MS: z.coerce.number().int().positive().default(6 * 60 * 60 * 1000),
 
     JOB_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
 

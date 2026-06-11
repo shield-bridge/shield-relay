@@ -18,7 +18,7 @@ export type JobStatus =
   | 'payment_failed'
   | 'user_tx_failed';
 
-export type WorkKind = 'inject_payment' | 'inject_user_tx' | 'gas_refill';
+export type WorkKind = 'inject_payment' | 'inject_user_tx';
 export type WorkState = 'queued' | 'running' | 'done' | 'failed';
 export type BroadcastState = 'none' | 'broadcasting' | 'broadcast' | 'confirmed';
 

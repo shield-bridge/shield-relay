@@ -11,7 +11,7 @@ import { buildRelayInfo } from '../server/info.js';
 import { rehydrate } from '../runtime/rehydrate.js';
 import { startSaplingParamsServer, type ParamsServer } from '../runtime/saplingParamsServer.js';
 import { ensureWorkersRevealed } from '../core/reveal.js';
-import { startGasRefillLoop } from '../economics/refillScheduler.js';
+import { startBalanceMonitor } from '../observability/balanceMonitor.js';
 import { acquireInstanceLock } from '../runtime/instanceLock.js';
 import { Metrics } from '../observability/metrics.js';
 import { Alerter } from '../observability/alerting.js';
@@ -20,8 +20,8 @@ import { Alerter } from '../observability/alerting.js';
  * `relay start` — wire the whole relay together and listen.
  *
  * P1: SQLite store, build the worker pool (parallelThreads:true), serve the three
- * routes + WS. P2 adds boot re-hydration + counter-pin reconcile + the gas-refill
- * loop + full drain; this start path is the seam they slot into.
+ * routes + WS. P2 adds boot re-hydration + counter-pin reconcile + the low-gas
+ * watchdog + full drain; this start path is the seam they slot into.
  */
 export async function start(): Promise<void> {
   const cfg = loadConfig();
@@ -87,7 +87,7 @@ export async function start(): Promise<void> {
   ready = true;
   logger.info({ port: cfg.PORT }, 'shield-relay listening');
 
-  const stopRefill = startGasRefillLoop({ config: cfg, queue, workers, logger, alerter });
+  const stopMonitor = startBalanceMonitor({ config: cfg, workers, logger, alerter });
   const stopAlerts = alerter.startDrainLoop();
   const metricsTimer = setInterval(() => {
     for (const w of workers) {
@@ -103,7 +103,7 @@ export async function start(): Promise<void> {
   const shutdown = async (sig: string): Promise<void> => {
     logger.info({ sig }, 'draining and shutting down');
     ready = false; // /readyz → 503; stop accepting new work
-    stopRefill();
+    stopMonitor();
     stopAlerts();
     clearInterval(metricsTimer);
     try {

@@ -60,14 +60,12 @@ function assertOffline(store: SqliteStore): void {
 const KIND_SHORT: Record<WorkKind, string> = {
   inject_payment: 'payment',
   inject_user_tx: 'user_tx',
-  gas_refill: 'gas',
 };
 
 function parseKind(s: string | undefined): WorkKind | undefined {
   if (!s) return undefined;
   if (s === 'payment' || s === 'inject_payment') return 'inject_payment';
   if (s === 'user_tx' || s === 'inject_user_tx') return 'inject_user_tx';
-  if (s === 'gas' || s === 'gas_refill') return 'gas_refill';
   throw new Error(`unknown --kind '${s}' (use payment | user_tx)`);
 }
 

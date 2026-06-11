@@ -19,7 +19,6 @@ import type { JobStatus } from '../store/index.js';
 const KIND_SHORT: Record<string, string> = {
   inject_payment: 'payment',
   inject_user_tx: 'user_tx',
-  gas_refill: 'gas',
 };
 const shortJob = (jobId: string): string => jobId.replace(/^job-/, '').slice(0, 8);
 function humanAge(epochSeconds: number): string {
@@ -133,7 +132,7 @@ export async function relayStatus(opts: StatusOpts): Promise<void> {
       const g = gas.get(i);
       const a = activeByPool.get(i) ?? { queued: 0, running: 0 };
       const gasStr = g == null ? '—' : g.toFixed(3);
-      const low = g != null && g < cfg.GAS_REFILL_THRESHOLD_XTZ ? '  ⚠ low' : '';
+      const low = g != null && g < cfg.LOW_BALANCE_XTZ ? '  ⚠ low' : '';
       console.log(`             ${String(i).padEnd(4)} ${gasStr.padEnd(11)} ${a.queued} / ${a.running}${low}`);
     }
     if (gasNote) console.log(`             (${gasNote})`);
