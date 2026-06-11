@@ -4,12 +4,12 @@ import { Registry, Counter, Gauge, Histogram, collectDefaultMetrics } from 'prom
  * Prometheus metrics — the cloud-agnostic replacement for the AWS CloudWatch
  * alarms. The four series map to the operator's real questions: is a worker
  * stalled (queue depth), are we earning + solvent (gas balance), how slow is
- * proving (broadcast duration), and is anyone replaying (memo rejections).
+ * proving (broadcast duration), and is anyone replaying (payment rejections).
  */
 export class Metrics {
   readonly registry = new Registry();
   readonly jobs: Counter<'status'>;
-  readonly memoReplayRejected: Counter<string>;
+  readonly paymentReplayRejected: Counter<string>;
   readonly broadcast: Histogram<'kind'>;
   readonly queueDepth: Gauge<'worker'>;
   readonly gasBalance: Gauge<'worker'>;
@@ -22,9 +22,9 @@ export class Metrics {
       labelNames: ['status'] as const,
       registers: [this.registry],
     });
-    this.memoReplayRejected = new Counter({
-      name: 'relay_memo_replay_rejected_total',
-      help: 'Payment memos rejected as already-consumed (replay/double-pay firewall)',
+    this.paymentReplayRejected = new Counter({
+      name: 'relay_payment_replay_rejected_total',
+      help: 'Payments rejected as already-consumed (replay/double-pay firewall)',
       registers: [this.registry],
     });
     this.broadcast = new Histogram({

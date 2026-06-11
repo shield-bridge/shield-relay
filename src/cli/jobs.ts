@@ -228,7 +228,6 @@ export function jobsShow(id: string, opts: { json?: boolean }): void {
       const expired = Math.floor(Date.now() / 1000) > job.expiresAt;
       console.log(`job        ${job.jobId}`);
       console.log(`  status   ${job.status}${expired ? '  (EXPIRED)' : ''}`);
-      console.log(`  memo     ${job.memo}`);
       console.log(`  pools    payment=${job.paymentPoolIndex} broadcast=${job.broadcastPoolIndex}`);
       console.log(`  paymentTx ${job.paymentTxHash ?? '—'}`);
       console.log(`  userTx    ${job.userTxHash ?? '—'}`);
@@ -310,7 +309,7 @@ export function jobsRetry(id: string | undefined, opts: RetryOpts): void {
         results.push({ taskId: w.taskId, kind: w.kind, outcome: `skipped (state=${w.state}; only failed rows retry — stuck rows auto-resume on restart)` });
         continue;
       }
-      // A failed inject_payment is usually futile: the user never paid, or the memo is
+      // A failed inject_payment is usually futile: the user never paid, or the payment is
       // PERMANENTLY consumed (no TTL). Re-running re-fails identically. Require --force.
       if (w.kind === 'inject_payment' && !opts.force) {
         const job = store.getJob(w.jobId);

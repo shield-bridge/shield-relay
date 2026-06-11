@@ -1,5 +1,5 @@
 /**
- * Store — the durable source of truth (jobs, the permanent consumed-memo replay
+ * Store — the durable source of truth (jobs, the permanent consumed-payment replay
  * guard, and the durable work_queue). The in-memory WorkerQueue is a cache over
  * `work_queue`; every HTTP 2xx is preceded by a durable write here.
  *
@@ -124,9 +124,14 @@ export interface Store {
     extra?: Partial<Pick<JobRow, 'paymentTxHash' | 'userTxHash' | 'errorMessage'>>,
   ): void;
 
-  // ── consumed memos (permanent, atomic, never swept) ─────────────────────────
-  /** Atomic INSERT — returns true if newly consumed, false if the memo already existed. */
-  tryConsumeMemo(memo: string, jobId: string): boolean;
+  // ── consumed payments (permanent, atomic, never swept) ──────────────────────
+  /**
+   * Atomic INSERT of a payment digest (sha256 of the payment's sapling txns).
+   * Returns true if newly consumed OR if the existing row is THIS job's (crash-resume
+   * re-running the consume step is idempotent); false if another job already consumed
+   * it — a replay. Consumed before broadcast so the EXACT payment bytes are single-use.
+   */
+  tryConsumePaymentDigest(digest: string, jobId: string): boolean;
 
   // ── work queue (durable inbound queue; the "SQS message") ────────────────────
   /**
@@ -177,7 +182,7 @@ export interface Store {
   /**
    * Park a work row as operator-discarded: force terminal 'failed' + stamp discardedAt, and set
    * the job to its kind-terminal *_failed with an errorMessage. Additive — NEVER DELETEs a row and
-   * NEVER touches consumed_memos (the credit-once replay guard stays intact). No-op if already discarded.
+   * NEVER touches consumed_payments (the credit-once replay guard stays intact). No-op if already discarded.
    */
   discardWork(taskId: string): MutationResult;
 

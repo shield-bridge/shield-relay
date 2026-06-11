@@ -9,7 +9,7 @@ import type { Logger } from '../observability/logger.js';
  * sequential-per-worker order across the restart boundary and resuming any
  * paid-but-unfinished job that a crash interrupted.
  *
- * `runTask` is restart-safe (counter-pin reconcile + same-job-idempotent memo
+ * `runTask` is restart-safe (counter-pin reconcile + same-job-idempotent payment
  * consume), so a mid-flight broadcast is reconciled, never blindly re-sent.
  * Returns the number of tasks resumed.
  */

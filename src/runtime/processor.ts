@@ -10,7 +10,7 @@ import { WsHub } from '../server/wsHub.js';
 import { HttpError } from '../server/errors.js';
 import { frame } from '../server/statusFrames.js';
 import { generateJobSecret, generateMemo, hashJobSecret, checkJobSecret } from '../server/auth.js';
-import { broadcastPayment, verifyPaymentMemo } from '../core/payment.js';
+import { broadcastPayment, verifyPaymentUnshield, paymentDigest } from '../core/payment.js';
 import { injectUserTransaction } from '../core/inject.js';
 import { quoteFee, checkSubmittedTxCount } from '../core/feeSchedule.js';
 import { readCounter, broadcastAlreadyLanded } from './reconcile.js';
@@ -53,6 +53,9 @@ export class Processor {
     const broadcastPoolIndex = n > 1 ? (paymentPoolIndex + 1 + randomInt(n - 1)) % n : paymentPoolIndex;
 
     const jobId = `job-${randomUUID()}`;
+    // Vestigial per-job token. The unshield-payment protocol uses NO memo (an unshield
+    // can't carry one); this only satisfies the legacy `jobs.memo NOT NULL` column on
+    // pre-release DBs and is never returned on the wire or used in verification.
     const memo = generateMemo();
     const jobSecret = generateJobSecret();
     const expiresAt = Math.floor(Date.now() / 1000) + this.d.config.JOB_TTL_SECONDS;
@@ -77,8 +80,12 @@ export class Processor {
     return {
       jobId,
       workerIndex: paymentPoolIndex,
-      address: this.d.workers[paymentPoolIndex]!.saplingAddress,
-      memo,
+      // The worker's PUBLIC tz1: the client builds an unshield of the fee to it, and
+      // the relay verifies that payout (no memo, no shielded transfer). `paymentMode`
+      // lets a client distinguish this from a legacy shielded-transfer relay whose
+      // `address` is a zet1 sapling address.
+      address: this.d.workers[paymentPoolIndex]!.tezosAddress,
+      paymentMode: 'unshield' as const,
       paymentAmount: String(Number(quotedFeeMutez) / 1_000_000), // the QUOTED amount
       quotedTxCount: txCount ?? null,
       // Lets a schedule-aware client preview fees before building a batch.
@@ -106,10 +113,10 @@ export class Processor {
     if (job.status !== 'info_generated') {
       throw new HttpError(409, `Invalid job status: ${job.status}. Already submitted?`);
     }
-    // A legitimate Phase-1 payment is EXACTLY one shielded transfer to the worker
+    // A legitimate Phase-1 payment is EXACTLY one unshield to the worker's tz1
     // (client: generatePaymentParams → one tx). Capping at 1 stops a griefer from
     // stuffing extra sapling txns into the payment for the relay to broadcast at
-    // storage-burn cost while only the memo'd value is credited.
+    // storage-burn cost while only the worker-bound output clears verification.
     this.validateTxns(payment?.txns, 1);
 
     const taskId = randomUUID();
@@ -201,16 +208,49 @@ export class Processor {
       this.d.store.setJobStatus(job.jobId, 'verifying_payment');
       this.d.wsHub.publish(frame(job.jobId, 'verifying_payment'));
 
-      // Broadcast — unless a crash-interrupted broadcast already landed.
+      const payment = JSON.parse(work.payloadJson) as ContractParams;
+
+      // Skip the gate + broadcast if a crash-interrupted broadcast already landed:
+      // it only reaches that state AFTER passing this same gate in a prior life.
       const landed =
         work.broadcastState !== 'none' &&
         work.pinnedCounter != null &&
         (await broadcastAlreadyLanded(worker.client, worker.tezosAddress, work.pinnedCounter));
+
       if (!landed) {
+        // ── THE FIREWALL: verify BEFORE broadcast ─────────────────────────────
+        // Simulate the submitted op and require it unshields >= the binding fee to
+        // THIS worker's own tz1. An op that pays anyone else (or pays nothing) is
+        // rejected here, having spent zero gas — a dry run, not a broadcast. This is
+        // what stops a hijacker getting the relay to inject an op of their choosing
+        // for free. The fallback fee covers a pre-fee-schedule job row (null quote).
+        const expectedMutez = BigInt(job.quotedFeeMutez ?? Number(this.d.config.PAYMENT_AMOUNT_MUTEZ));
+        const { ok, receivedMutez } = await verifyPaymentUnshield(
+          worker.client,
+          this.d.config.factoryContract,
+          payment,
+          worker.tezosAddress,
+          expectedMutez,
+        );
+        if (!ok) {
+          return this.failPayment(
+            taskId,
+            job.jobId,
+            `Payment verification failed: unshield pays ${receivedMutez} mutez to the worker, need >= ${expectedMutez}.`,
+          );
+        }
+
+        // Atomic replay guard — consume the exact payment bytes BEFORE broadcast, so
+        // two concurrent jobs race on this insert (not on the chain). Same-job
+        // idempotent → safe to re-run on a crash-resume that didn't yet broadcast.
+        if (!this.d.store.tryConsumePaymentDigest(paymentDigest(payment), job.jobId)) {
+          this.d.metrics.paymentReplayRejected.inc();
+          return this.failPayment(taskId, job.jobId, 'Payment already consumed (replay).');
+        }
+
         const stopTimer = this.d.metrics.broadcast.startTimer({ kind: 'payment' });
         const counter = await readCounter(worker.client, worker.tezosAddress);
         this.d.store.setBroadcasting(taskId, counter); // pin BEFORE send
-        const payment = JSON.parse(work.payloadJson) as ContractParams;
         await broadcastPayment(
           worker.client,
           this.d.config.factoryContract,
@@ -222,18 +262,6 @@ export class Processor {
           },
         );
         stopTimer();
-      }
-
-      // Verify against the job's BINDING quote (legacy or scheduled). The fallback
-      // covers any pre-fee-schedule job row migrated with a null quote.
-      const expectedMutez = BigInt(job.quotedFeeMutez ?? Number(this.d.config.PAYMENT_AMOUNT_MUTEZ));
-      if (!(await verifyPaymentMemo(worker.sdk, job.memo, expectedMutez))) {
-        return this.failPayment(taskId, job.jobId, 'Payment verification failed (memo/amount).');
-      }
-      // tryConsumeMemo is same-job idempotent → safe to re-run on resume.
-      if (!this.d.store.tryConsumeMemo(job.memo, job.jobId)) {
-        this.d.metrics.memoReplayRejected.inc();
-        return this.failPayment(taskId, job.jobId, 'Memo already consumed.');
       }
 
       this.d.store.completeWork(taskId, job.jobId, 'payment_confirmed');

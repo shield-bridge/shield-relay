@@ -18,8 +18,8 @@ import type {
 
 /**
  * The canonical schema. The in-memory WorkerQueue is a cache over `work_queue`;
- * this table IS the durable "SQS message". `consumed_memos` is the permanent,
- * never-swept replay guard (UNIQUE(memo) == DynamoDB attribute_not_exists).
+ * this table IS the durable "SQS message". `consumed_payments` is the permanent,
+ * never-swept replay guard (UNIQUE(digest) == DynamoDB attribute_not_exists).
  */
 const DDL = `
 CREATE TABLE IF NOT EXISTS jobs (
@@ -40,9 +40,10 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS jobs_expiresAt ON jobs(expiresAt);
 
--- PERMANENT replay/credit-once guard. NO TTL, NO sweep.
-CREATE TABLE IF NOT EXISTS consumed_memos (
-  memo       TEXT PRIMARY KEY,
+-- PERMANENT replay/credit-once guard. NO TTL, NO sweep. Keyed on a sha256 digest
+-- of the payment's sapling txns: a verified payment's exact bytes are single-use.
+CREATE TABLE IF NOT EXISTS consumed_payments (
+  digest     TEXT PRIMARY KEY,
   jobId      TEXT NOT NULL,
   consumedAt INTEGER NOT NULL
 );
@@ -160,20 +161,20 @@ export class SqliteStore implements Store {
       });
   }
 
-  // ── consumed memos ───────────────────────────────────────────────────────────
-  tryConsumeMemo(memo: string, jobId: string): boolean {
+  // ── consumed payments ─────────────────────────────────────────────────────────
+  tryConsumePaymentDigest(digest: string, jobId: string): boolean {
     try {
       this.db
-        .prepare('INSERT INTO consumed_memos (memo, jobId, consumedAt) VALUES (?, ?, ?)')
-        .run(memo, jobId, Math.floor(Date.now() / 1000));
+        .prepare('INSERT INTO consumed_payments (digest, jobId, consumedAt) VALUES (?, ?, ?)')
+        .run(digest, jobId, Math.floor(Date.now() / 1000));
       return true;
     } catch (err) {
       if (err instanceof Error && (err as { code?: string }).code?.startsWith('SQLITE_CONSTRAINT')) {
         // Already present. If it's OURS (crash-resume re-running the consume step),
-        // treat as success; another job's memo is a replay → reject.
+        // treat as success; another job's digest is a replay → reject.
         const row = this.db
-          .prepare('SELECT jobId FROM consumed_memos WHERE memo = ?')
-          .get(memo) as { jobId: string } | undefined;
+          .prepare('SELECT jobId FROM consumed_payments WHERE digest = ?')
+          .get(digest) as { jobId: string } | undefined;
         return row?.jobId === jobId;
       }
       throw err;

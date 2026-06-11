@@ -9,6 +9,9 @@ export interface RelayInfo {
   protocol: string;
   network: string;
   factoryContract: string;
+  /** How Phase-1 payment is made. 'unshield' → the client unshields the fee to the
+   *  worker's tz1 (this relay); a legacy relay would imply a shielded transfer. */
+  paymentMode: 'unshield';
   fee: { model: 'flat' | 'scheduled'; flatMutez: string };
   feeSchedule: { baseMutez: number; perTxMutez: number; quantumMutez: number };
 }
@@ -18,6 +21,7 @@ export function buildRelayInfo(cfg: Config): RelayInfo {
     protocol: 'shield-relay/1',
     network: cfg.TEZOS_NETWORK,
     factoryContract: cfg.factoryContract,
+    paymentMode: 'unshield',
     fee: {
       model: cfg.fee.perTxMutez > 0n ? 'scheduled' : 'flat',
       flatMutez: String(cfg.PAYMENT_AMOUNT_MUTEZ), // legacy / no-txCount quote
