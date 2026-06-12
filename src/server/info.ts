@@ -14,6 +14,9 @@ export interface RelayInfo {
   paymentMode: 'unshield';
   fee: { model: 'flat' | 'scheduled'; flatMutez: string };
   feeSchedule: { baseMutez: number; perTxMutez: number; quantumMutez: number };
+  /** Status transport this relay speaks. 'poll' = GET /status/:jobId (the single transport
+   *  since the WS→poll migration). Lets a client negotiate transport from the descriptor. */
+  transport: 'poll';
 }
 
 export function buildRelayInfo(cfg: Config): RelayInfo {
@@ -22,6 +25,7 @@ export function buildRelayInfo(cfg: Config): RelayInfo {
     network: cfg.TEZOS_NETWORK,
     factoryContract: cfg.factoryContract,
     paymentMode: 'unshield',
+    transport: 'poll',
     fee: {
       model: cfg.fee.perTxMutez > 0n ? 'scheduled' : 'flat',
       flatMutez: String(cfg.PAYMENT_AMOUNT_MUTEZ), // legacy / no-txCount quote
