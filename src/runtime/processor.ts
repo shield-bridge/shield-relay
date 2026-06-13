@@ -13,7 +13,7 @@ import { generateJobSecret, generateMemo, hashJobSecret, checkJobSecret } from '
 import { broadcastPayment, verifyPaymentUnshield, verifyPaymentLanded, verifyPaymentLandedByScan, paymentDigest } from '../core/payment.js';
 import { injectUserTransaction } from '../core/inject.js';
 import { quoteFee, checkSubmittedTxCount } from '../core/feeSchedule.js';
-import { readCounter, broadcastAlreadyLanded } from './reconcile.js';
+import { readCounter, broadcastAlreadyLanded, classifyTaskError } from './reconcile.js';
 
 const HEX = /^[0-9a-fA-F]+$/;
 const MAX_TXN_HEX = 100_000;
@@ -26,6 +26,14 @@ const MAX_INJECT_TXS = 32;
 // recover its applied-status (we don't persist the inclusion level). Generous for a
 // prompt restart; the scan stops at the first match so the typical cost is 1-2 blocks.
 const RESUME_SCAN_DEPTH = 60;
+// Post-broadcast auto-reconcile budget. An UNKNOWN error AFTER a broadcast (e.g. an RPC
+// blip during the applied-check) must never terminal-fail the job — the op may have
+// landed. We re-enqueue to reconcile from chain state (the `landed` branch), bounded so
+// a sustained outage doesn't spin forever; after the cap the task is PARKED (left
+// non-terminal + the job in-progress) so a restart's rehydrate or `relay jobs retry`
+// finishes it — it is never flipped to *_failed. See classifyTaskError.
+const MAX_POST_BROADCAST_RECONCILE_TRIES = 8;
+const RECONCILE_RETRY_DELAY_MS = 4000;
 
 export interface ProcessorDeps {
   config: Config;
@@ -47,6 +55,11 @@ export interface ProcessorDeps {
  */
 export class Processor {
   constructor(private readonly d: ProcessorDeps) {}
+
+  // In-memory count of post-broadcast auto-reconcile re-enqueues per task (bounds the
+  // retry loop without a schema change; resets on restart, where rehydrate gives a fresh
+  // budget). Cleared once the task settles.
+  private readonly reconcileTries = new Map<string, number>();
 
   // ── /get-worker-info ──────────────────────────────────────────────────────
   getWorkerInfo(txCountRaw?: unknown) {
@@ -329,19 +342,78 @@ export class Processor {
         }
       }
 
+      this.reconcileTries.delete(taskId);
       this.d.store.completeWork(taskId, job.jobId, 'payment_confirmed');
       this.d.metrics.jobs.inc({ status: 'payment_confirmed' });
       this.d.logger.info({ jobId: job.jobId }, 'payment confirmed');
     } catch (e) {
-      this.failPayment(taskId, job.jobId, e instanceof Error ? e.message : 'Payment injection failed.');
+      // UNKNOWN error: terminal-fail only if nothing was broadcast; otherwise reconcile
+      // (the broadcast may have landed — never report a false payment_failed).
+      this.onTaskError('inject_payment', taskId, job.jobId, work.poolIndex, e);
     }
   }
 
+  /** Mark a payment terminally failed for a KNOWN failure (verification / applied-check
+   *  said no). Distinct from onTaskError, which handles UNKNOWN thrown errors. */
   private failPayment(taskId: string, jobId: string, msg: string): void {
+    this.reconcileTries.delete(taskId);
     this.d.store.setWorkState(taskId, 'failed');
     this.d.store.setJobStatus(jobId, 'payment_failed', { errorMessage: msg });
     this.d.metrics.jobs.inc({ status: 'payment_failed' });
     this.d.logger.warn({ jobId, msg }, 'payment failed');
+  }
+
+  /**
+   * Handle an UNKNOWN thrown error from a payment/inject task. Pre-broadcast → terminal
+   * fail. Post-broadcast → never terminal-fail (the op may have landed): re-enqueue to
+   * reconcile from chain state, bounded, then park (leave non-terminal + recoverable).
+   * This is the relay mirror of the Shield Bridge serverless injector's fund-safety fix.
+   */
+  private onTaskError(
+    kind: 'inject_payment' | 'inject_user_tx',
+    taskId: string,
+    jobId: string,
+    poolIndex: number,
+    err: unknown,
+  ): void {
+    const msg = err instanceof Error ? err.message : 'task failed';
+    const failStatus = kind === 'inject_user_tx' ? 'user_tx_failed' : 'payment_failed';
+    const broadcastState = this.d.store.getWork(taskId)?.broadcastState ?? 'none';
+    const tries = this.reconcileTries.get(taskId) ?? 0;
+    const action = classifyTaskError(broadcastState, tries, MAX_POST_BROADCAST_RECONCILE_TRIES);
+
+    if (action === 'fail') {
+      // Nothing was broadcast → genuine terminal failure.
+      this.reconcileTries.delete(taskId);
+      this.d.store.setWorkState(taskId, 'failed');
+      this.d.store.setJobStatus(jobId, failStatus, { errorMessage: msg });
+      this.d.metrics.jobs.inc({ status: failStatus });
+      this.d.logger.warn({ jobId, taskId, msg }, `${kind} failed (pre-broadcast)`);
+      return;
+    }
+
+    if (action === 'reconcile') {
+      // The op may have landed — re-run the task to reconcile from chain state (its
+      // `landed` branch). Leave the work NON-TERMINAL; never write *_failed here.
+      this.reconcileTries.set(taskId, tries + 1);
+      this.d.logger.warn(
+        { jobId, taskId, tries, msg },
+        `${kind} post-broadcast error — re-queueing to reconcile (not failing)`,
+      );
+      const t = setTimeout(() => this.dispatch(poolIndex, taskId), RECONCILE_RETRY_DELAY_MS);
+      (t as { unref?: () => void }).unref?.();
+      return;
+    }
+
+    // 'park': auto-reconcile exhausted (sustained outage). Leave the work non-terminal +
+    // the job in-progress so the next restart's rehydrate or an operator `relay jobs
+    // retry` finishes it. NEVER *_failed — the op likely landed; a false failure would
+    // strand the fee / report a phantom failure to the client.
+    this.reconcileTries.delete(taskId);
+    this.d.logger.error(
+      { jobId, taskId, msg },
+      `${kind} post-broadcast reconcile exhausted — left recoverable (NOT marked failed)`,
+    );
   }
 
   private async runInject(taskId: string): Promise<void> {
@@ -377,15 +449,14 @@ export class Processor {
         stopTimer();
       }
 
+      this.reconcileTries.delete(taskId);
       this.d.store.completeWork(taskId, job.jobId, 'completed', opHash);
       this.d.metrics.jobs.inc({ status: 'completed' });
       this.d.logger.info({ jobId: job.jobId, opHash }, 'user transaction completed');
     } catch (e) {
-      const msg = e instanceof Error ? e.message : 'User transaction injection failed.';
-      this.d.store.setWorkState(taskId, 'failed');
-      this.d.store.setJobStatus(job.jobId, 'user_tx_failed', { errorMessage: msg });
-      this.d.metrics.jobs.inc({ status: 'user_tx_failed' });
-      this.d.logger.warn({ jobId: job.jobId, msg }, 'user transaction failed');
+      // UNKNOWN error: terminal-fail only if nothing was broadcast; otherwise reconcile
+      // (the user op may have landed — never report a false user_tx_failed).
+      this.onTaskError('inject_user_tx', taskId, job.jobId, work.poolIndex, e);
     }
   }
 
