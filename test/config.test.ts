@@ -20,11 +20,11 @@ describe('ConfigSchema fee guards', () => {
   });
 
   it('FEE_BASE_MUTEZ overrides the payment amount as the base', () => {
-    const r = ConfigSchema.safeParse({ FEE_BASE_MUTEZ: '250000', FEE_PER_TX_MUTEZ: '150000', FEE_QUANTUM_MUTEZ: '250000' });
+    const r = ConfigSchema.safeParse({ FEE_BASE_MUTEZ: '300000', FEE_PER_TX_MUTEZ: '270000', FEE_QUANTUM_MUTEZ: '250000' });
     expect(r.success).toBe(true);
     if (r.success) {
-      expect(r.data.fee.baseMutez).toBe(250_000n);
-      expect(r.data.fee.perTxMutez).toBe(150_000n);
+      expect(r.data.fee.baseMutez).toBe(300_000n);
+      expect(r.data.fee.perTxMutez).toBe(270_000n);
     }
   });
 });

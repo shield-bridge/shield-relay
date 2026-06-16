@@ -18,7 +18,7 @@ Companion to `DESIGN.md` (`shield-relay/1`).
 > unshield-to-realize is superseded; the quote *amounts* (base/per-tx/quantum) are
 > unchanged. The fee collection is now PUBLIC (worker tz1 receipts are observable; the
 > sapling spender stays private). The code is the source of truth.
-**Source data:** mainnet operation [`ooRSpM5TDKpr1SEchYaxhJgFQQrzGB1sTZWLZXauMV49kr5AhkZ`](https://tzkt.io/ooRSpM5TDKpr1SEchYaxhJgFQQrzGB1sTZWLZXauMV49kr5AhkZ) — a real 10-asset relay batch (20 contents) that collected the flat 1 XTZ fee.
+**Source data:** a representative mainnet 10-asset shielded batch (20 contents) — the worst-case op shape a relay broadcasts. The per-op storage/gas figures below come from the §6.1 sweep of public Set-contract operations.
 
 ---
 
@@ -80,16 +80,22 @@ Resulting tier table (quantize **up**, never down):
 
 | txCount | raw (XTZ) | charged (XTZ) | est. cost | margin |
 | --- | --- | --- | --- | --- |
-| 1 | 0.40 | **0.50** | ~0.18 | ~64% |
-| 2 | 0.55 | **0.75** | ~0.27 | ~64% |
-| 3 | 0.70 | **0.75** | ~0.36 | ~52% |
-| 5 | 1.00 | **1.00** | ~0.54 | ~46% |
-| 10 | 1.75 | **1.75** | ~0.99–1.12 | ~36–43% |
+| 1 | 0.57 | **0.75** | ~0.18 | ~76% |
+| 2 | 0.84 | **1.00** | ~0.27 | ~73% |
+| 3 | 1.11 | **1.25** | ~0.36 | ~71% |
+| 5 | 1.65 | **1.75** | ~0.54 | ~69% |
+| 10 | 3.00 | **3.00** | ~0.99–1.12 | ~63–67% |
 
-Singles get *cheaper* than today (0.50 vs 1.00) while the batch cap becomes
-solidly profitable. Note the whole table collapses to only a handful of
-distinct on-chain-visible values: {0.50, 0.75, 1.00, 1.25, 1.50, 1.75} — that
-is deliberate (§4).
+Singles still get *cheaper* than the flat fee (0.75 vs 1.00 XTZ) while the batch
+cap becomes solidly profitable. **Quantization caveat:** sizing `perTxMutez` at
+270k for the ≥20% profit floor (§6.1) puts it *above* the 250k quantum, so each
+added tx advances the fee by at least one quantum and the charged values do
+**not** collapse onto a small shared set — txCount 1→10 yields 10 distinct values
+{0.75, 1.00, 1.25, 1.50, 1.75, 2.00, 2.25, 2.50, 2.75, 3.00} XTZ. The quantum
+still coarsens every fee onto a 0.25-XTZ grid (hiding exact per-byte cost), but
+the stronger value-collapse property of §4 holds only when
+`perTxMutez < quantumMutez`; here it is traded away for the profit floor (restore
+it by raising the quantum above `perTxMutez` if collapse matters more than margin).
 
 ## 3. Protocol changes (`shield-relay/1` → additive, not breaking)
 
@@ -221,8 +227,14 @@ With exact per-byte pricing, that unshield amount is a subset-sum over a large
 set of distinct per-job fees — frequently decomposable, letting a passive
 observer recover the relay's job-shape mix (and, with timing, sometimes
 individual jobs). With 0.25-quantized fees, every redemption amount is a
-multiple of 0.25 XTZ composed from ~6 possible values — the decomposition is
-maximally degenerate and the observer learns little beyond "n jobs, roughly".
+multiple of 0.25 XTZ. **Caveat — does not hold for the current recommendation:**
+the "~6 possible values, maximally degenerate decomposition" property requires
+`perTxMutez < quantumMutez`. The recommended `perTxMutez = 270k` exceeds the 250k
+quantum (sized for the §6.1 profit floor), so per-job fees instead span 10
+distinct values across txCount 1→10; the quantum still coarsens each onto a
+0.25-XTZ grid, but value-collapse is traded away for margin. (The redemption leg
+analysed here is itself superseded — see the option-B banner; fees now land as
+public tz1 receipts directly. This remains as the rationale for a coarse quantum.)
 
 Two cheap hardenings to adopt alongside (both already consistent with the
 gas-refill design):
@@ -234,16 +246,18 @@ gas-refill design):
    full balance, so consecutive redemptions don't telescope into an exact
    running sum. One-line change in `refillWorkerGas`; costs nothing.
 
-The same logic is why the schedule should stay **coarse**. Resist per-byte or
+The same logic argues for a **coarse** quantum and against per-byte or
 per-output precision: every extra distinct fee value is anonymity-set
-fragmentation in the redemption stream. The headroom in `perTxMutez` is the
-price of privacy, and at ~40–60% margins it is affordable.
+fragmentation. The current recommendation deliberately accepts some of that
+fragmentation — `perTxMutez (270k) > quantumMutez (250k)` for the profit floor —
+so fees are coarsened but not collapsed; an operator who values collapse over
+margin can raise `quantumMutez` to at/above `perTxMutez` to recover it.
 
 ## 5. Back-compat and rollout
 
 The deployed clients (V2 root + legacy) pay a hardcoded flat 1 XTZ and never
 send `txCount`. The v3 client hardcodes `RELAY_FEE_XTZ = 1`
-(`src/app/core/bridge/engine.ts` in shield-bridge). None of them break:
+(a hardcoded client-side constant). None of them break:
 
 1. **Relay ships dark** (defaults reproduce flat pricing, §3.5).
 2. **Flip the schedule on** (operator sets §2's values incl. `LEGACY_FLAT_MAX_TXS=5`,
@@ -284,8 +298,8 @@ state; the user-facing price drop follows whenever the client ships.
 ### 6.1 Empirical storage-burn sweep (2026-06) — resolves Q1
 
 Method: 50 applied, storage-bearing sapling operations on a live mainnet Set
-contract (`KT1KzAPQdpziH3bxxJXQNmNQA46oo8tnDQfj`), pulled from TzKT, plus the
-known 10-asset relay batch (`ooRSpM5…`). Per-op figures:
+contract, pulled from TzKT, plus a representative 10-asset relay-shaped batch.
+Per-op figures:
 
 | metric | p50 | p75 | p90 | p95 | max | mean |
 |---|---|---|---|---|---|---|

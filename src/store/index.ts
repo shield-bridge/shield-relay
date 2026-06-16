@@ -3,8 +3,8 @@
  * guard, and the durable work_queue). The in-memory WorkerQueue is a cache over
  * `work_queue`; every HTTP 2xx is preceded by a durable write here.
  *
- * Default impl: SQLite (better-sqlite3, synchronous transactions). A Postgres
- * adapter (DATABASE_URL) implements the same interface for networked-FS / HA.
+ * Default impl: SQLite (better-sqlite3, synchronous transactions). The Store
+ * interface is adapter-agnostic, so a networked/HA backend can be added later.
  */
 
 /** Canonical job status. The WIRE subset (sent to clients) excludes `info_generated`. */
@@ -111,7 +111,7 @@ export interface MutationResult {
 }
 
 export interface Store {
-  /** Run migrations / open the DB. Throws if the data dir is on an unsafe networked FS. */
+  /** Run migrations / open the DB. */
   init(): void;
   close(): void;
 
