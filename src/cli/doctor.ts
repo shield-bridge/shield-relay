@@ -76,12 +76,14 @@ export async function doctor(): Promise<void> {
     add('pool', 'fail', e instanceof Error ? e.message : 'pool secret missing/invalid');
   }
 
-  const needGb = cfg.WORKER_COUNT * 1.5;
+  // The relay is a pure tz1 broadcaster (no ZK proving), so it needs only a few
+  // hundred MB regardless of WORKER_COUNT — just a sanity headroom check.
+  const needGb = 0.5;
   const freeGb = freemem() / GB;
   add(
     'ram',
     freeGb >= needGb ? 'ok' : 'warn',
-    `${freeGb.toFixed(1)} GB free / ${(totalmem() / GB).toFixed(1)} GB total; need ~${needGb.toFixed(1)} GB for ${cfg.WORKER_COUNT} active worker(s)`,
+    `${freeGb.toFixed(1)} GB free / ${(totalmem() / GB).toFixed(1)} GB total; the relay needs only a few hundred MB regardless of worker count`,
   );
 
   try {

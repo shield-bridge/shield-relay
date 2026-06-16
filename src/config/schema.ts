@@ -35,14 +35,16 @@ export const ConfigSchema = z
 
     // Quantized fee schedule (FEE_SCHEDULE.md). Defaults reproduce the flat fee
     // EXACTLY (ships dark): base=PAYMENT_AMOUNT (resolved below), perTx=0, quantum=1,
-    // legacy cap off. Operators opt in with the recommended 250k/150k/250k + cap=5.
+    // legacy cap off. Operators opt in with the recommended 300k/270k/250k + cap=5.
     FEE_BASE_MUTEZ: z.coerce.bigint().nonnegative().optional(),
     FEE_PER_TX_MUTEZ: z.coerce.bigint().nonnegative().default(0n),
     FEE_QUANTUM_MUTEZ: z.coerce.bigint().positive().default(1n),
     LEGACY_FLAT_MAX_TXS: z.coerce.number().int().nonnegative().default(0), // 0 = no cap
 
-    WORKER_COUNT: z.coerce.number().int().positive().default(1),
-    MAX_CONCURRENT_PROOFS: z.coerce.number().int().positive().default(2),
+    // Default 2 so Phase-1 payment and Phase-2 broadcast run on DISTINCT tz1
+    // addresses (the two-worker unlinkability property). With 1 worker both phases
+    // collapse onto one tz1, making the public fee receipt pairable with the user op.
+    WORKER_COUNT: z.coerce.number().int().positive().default(2),
     REQUIRE_JOB_SECRET: bool.default('true'),
 
     // Secrets — exactly one source must resolve (validated in pool loading).
@@ -50,8 +52,6 @@ export const ConfigSchema = z
     POOL_JSON: z.string().optional(),
 
     DATA_DIR: z.string().default('./data'),
-    DATABASE_URL: z.string().optional(),
-    ALLOW_NETWORK_FS: bool.default('false'),
 
     CONFIRMATIONS_PHASE1: z.coerce.number().int().positive().default(2),
     CONFIRMATIONS_PHASE2: z.coerce.number().int().positive().default(1),

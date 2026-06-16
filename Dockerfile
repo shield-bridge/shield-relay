@@ -96,8 +96,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       tini ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-# DATA_DIR: local-FS data dir — MUST be a LOCAL volume at runtime (SQLite WAL +
-#   instance_lock corrupt on networked FS; the relay refuses unless ALLOW_NETWORK_FS).
+# DATA_DIR: local-FS data dir — keep it on a LOCAL volume at runtime (SQLite WAL +
+#   the single-writer instance lock can corrupt on a networked FS).
 ENV NODE_ENV=production \
     DATA_DIR=/data \
     PORT=8080

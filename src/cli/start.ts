@@ -17,9 +17,9 @@ import { Alerter } from '../observability/alerting.js';
 /**
  * `relay start` — wire the whole relay together and listen.
  *
- * P1: SQLite store, build the worker pool (parallelThreads:true), serve the HTTP
- * routes (status via GET /status polling). P2 adds boot re-hydration + counter-pin reconcile + the low-gas
- * watchdog + full drain; this start path is the seam they slot into.
+ * SQLite store, build the worker pool (pure tz1 broadcasters — no proving), serve
+ * the HTTP routes (status via GET /status polling), boot re-hydration + counter-pin
+ * reconcile, the low-gas watchdog, and a bounded SIGTERM drain (DRAIN_TIMEOUT_MS).
  */
 export async function start(): Promise<void> {
   const cfg = loadConfig();
@@ -38,7 +38,7 @@ export async function start(): Promise<void> {
     );
   }
 
-  // P1: SQLite only. Postgres (DATABASE_URL) adapter is P4.
+  // SQLite store (better-sqlite3, local FS). A networked/HA backend may come later.
   const store = new SqliteStore(join(cfg.DATA_DIR, 'relay.db'));
   store.init();
 
@@ -101,7 +101,13 @@ export async function start(): Promise<void> {
     clearInterval(metricsTimer);
     try {
       await app.close(); // stop new HTTP
-      await queue.drain(); // let in-flight per-worker tasks finish
+      // Let in-flight per-worker tasks finish, but cap the wait at DRAIN_TIMEOUT_MS so a
+      // stuck task can't block past Docker's stop_grace_period. Hard-kill is safe: the
+      // counter-pinned work_queue lets the next boot's rehydrate finish any in-flight op.
+      await Promise.race([
+        queue.drain(),
+        new Promise((resolve) => setTimeout(resolve, cfg.DRAIN_TIMEOUT_MS)),
+      ]);
       lock.release();
       store.close();
     } finally {

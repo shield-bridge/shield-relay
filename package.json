@@ -5,6 +5,12 @@
   "description": "Self-hostable privacy relay for Shield Bridge — broadcasts Tezos Sapling transactions for a fee, anonymously. One container, run it anywhere.",
   "license": "MIT",
   "author": "Andrew Kishino",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AndrewKishino/shield-relay.git"
+  },
+  "homepage": "https://github.com/AndrewKishino/shield-relay#readme",
+  "bugs": "https://github.com/AndrewKishino/shield-relay/issues",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -20,7 +26,6 @@
     "start": "node dist/cli/index.js start",
     "dev": "tsx src/cli/index.ts start",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
     "test": "vitest run"
   },
   "dependencies": {

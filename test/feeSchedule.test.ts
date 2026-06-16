@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { quantizeUp, quoteFee, checkSubmittedTxCount, type FeeParams } from '../src/core/feeSchedule.js';
 
 // The recommended (opt-in) schedule from FEE_SCHEDULE.md §2.
-const SCHED: FeeParams = { baseMutez: 250_000n, perTxMutez: 150_000n, quantumMutez: 250_000n };
+const SCHED: FeeParams = { baseMutez: 300_000n, perTxMutez: 270_000n, quantumMutez: 250_000n };
 // The dark default — reproduces the flat 1 XTZ for every txCount.
 const DARK: FeeParams = { baseMutez: 1_000_000n, perTxMutez: 0n, quantumMutez: 1n };
 
@@ -20,14 +20,16 @@ describe('quantizeUp', () => {
 
 describe('quoteFee', () => {
   it('matches the FEE_SCHEDULE.md tier table for the recommended schedule', () => {
-    expect(quoteFee(1, SCHED)).toBe(500_000n); // 0.40 → 0.50
-    expect(quoteFee(2, SCHED)).toBe(750_000n); // 0.55 → 0.75
-    expect(quoteFee(3, SCHED)).toBe(750_000n); // 0.70 → 0.75
-    expect(quoteFee(5, SCHED)).toBe(1_000_000n); // 1.00 → 1.00
-    expect(quoteFee(10, SCHED)).toBe(1_750_000n); // 1.75 → 1.75
-    // Collapses to a handful of distinct on-chain values (privacy quantization).
-    const distinct = new Set(Array.from({ length: 10 }, (_, i) => quoteFee(i + 1, SCHED)));
-    expect(distinct.size).toBeLessThanOrEqual(6);
+    expect(quoteFee(1, SCHED)).toBe(750_000n); // 0.57 → 0.75
+    expect(quoteFee(2, SCHED)).toBe(1_000_000n); // 0.84 → 1.00
+    expect(quoteFee(3, SCHED)).toBe(1_250_000n); // 1.11 → 1.25
+    expect(quoteFee(5, SCHED)).toBe(1_750_000n); // 1.65 → 1.75
+    expect(quoteFee(10, SCHED)).toBe(3_000_000n); // 3.00 → 3.00
+    // Every charged fee lands on the 0.25-XTZ quantum grid (a multiple of quantum).
+    const fees = Array.from({ length: 10 }, (_, i) => quoteFee(i + 1, SCHED));
+    for (const f of fees) expect(f % 250_000n).toBe(0n);
+    // perTx (270k) > quantum (250k) ⇒ each step advances a quantum: NO value-collapse.
+    expect(new Set(fees).size).toBe(10);
   });
 
   it('DARK defaults reproduce the flat fee for every txCount', () => {

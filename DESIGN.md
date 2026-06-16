@@ -1,8 +1,10 @@
 # Shield Relay — Build-Ready Blueprint (`shield-relay/1`)
 
-*Lead-architect synthesis of 5 design lenses + 3 red-teams, **verified against `shield-bridge-sdk` source**, the Lambda code, and this scaffold. 2026-06-09. Supersedes the earlier draft.*
+*Original architecture blueprint — lead-architect synthesis of 5 design lenses + 3 red-teams, 2026-06-09.*
 
-> **⚠ SUPERSEDED IN PART — read this first (2026-06).** The payment model below (a
+> **⚠ HISTORICAL DESIGN RECORD — read this first.** This document is the *original* build blueprint; the shipped relay diverged from it substantially. The implementation is a **pure tz1 broadcaster** (no Sapling SDK, no `worker_threads`/proving, no baked params), delivers status by **GET /status polling** (the WebSocket transport was removed), has **no gas-refill** (workers self-fund from the public unshield fee), and ships a **lean SQLite-only** file tree (the `deploy/`, `observability/`, `litestream`, Postgres-adapter, and `docker/` pieces in §3 below were never built). For the authoritative current contract + behavior, read the code and [`docs/SHIELD_RELAY_PROTOCOL.md`](./docs/SHIELD_RELAY_PROTOCOL.md); the detail below is kept for design rationale.
+>
+> The original payment model below (a
 > *shielded* 1-XTZ transfer carrying a *memo*, verified after broadcast) was replaced by
 > **option B**: Phase-1 payment is now a **public unshield of the fee to the worker's
 > tz1, verified BEFORE broadcast** by a node simulation (`verifyPaymentUnshield` →
@@ -27,13 +29,13 @@
 > as the historical design record (the SDK/RAM/refill/per-worker-mutex reasoning still
 > explains *why* the scaffold was shaped as it was).
 
-> **Status correction (read first):** one design-agent finding claimed the in-tree backend "has no jobSecret and broadcasts Phase-2 from the same worker," contradicting "Phase 0 enforced." That is an artifact of the agents reading the **v3 checkout**, whose `infrastructure/serverless` never received the Phase 0 *backend* merge (Phase 0 landed on `main`). **Phase 0 is live + enforced on mainnet** — verified `401`(no secret)/`403`(wrong)/`409`(right) against `api.shieldbridge.xyz`. The migration gate below still holds: freeze the reference wire from the **live prod relay**, not from a checkout.
+> **Status correction (read first):** one design-agent finding claimed the in-tree backend "has no jobSecret and broadcasts Phase-2 from the same worker," contradicting "Phase 0 enforced." That is an artifact of the agents reading the **v3 checkout**, whose `infrastructure/serverless` never received the Phase 0 *backend* merge (Phase 0 landed on `main`). **Phase 0 (the per-job secret) is live + enforced on the reference relay** — it returns the `401`/`403`/`409` auth codes documented in the protocol spec. The migration gate below still holds: freeze the reference wire from the **live prod relay**, not from a checkout.
 
 ---
 
 ## 1. Verdict
 
-**Yes — a single-container, multi-host, self-migratable relay is achievable, but ONLY after correcting one fatal architecture error the lenses all shared.** The headline shape: **one Node 22 process = one logical relay owning N workers, where each worker is an isolated `worker_threads` SDK context (`parallelThreads:true`), serialized by a per-*physical-tz1* promise-chain mutex, backed by a durable `better-sqlite3` work-queue written *before* every HTTP 2xx, with boot re-hydration and counter-pinned reconcile-on-restart, in-process `ws` fan-out, and an in-queue gas-refill.** The lenses' unanimous "per-worker mutex in `parallelThreads:false` is stronger than SQS FIFO" claim is **false and fatal**: verified at `shield-bridge-sdk/dist/index.js:270-277`, direct mode aliases *every* worker SDK instance to one process-global singleton (`saplingCore.js`: *"singleton state … safe because each execution context loads its own copy"*), and `loadSaplingSecret` overwrites it per-op — so two workers proving concurrently corrupt each other's spending key. The fix is non-negotiable: **`parallelThreads:true`** for real per-thread isolation, which forces an **honest RAM model** (a worker thread active in the reaper window holds ~1.2–1.5 GB resident) and makes `MAX_CONCURRENT_PROOFS` a CPU/RAM-pressure cap, *not* a memory-magic decoupler. With that plus the red-teams' accepted fixes — **counter-pin-before-send reconcile**, **mutex keyed on physical tz1**, **single-transaction `jobs`↔`work_queue` coupling**, **`not_found` kept in the wire status set**, and **a live-prod conformance transcript as the migration gate** — the design matches or beats the AWS baseline and is build-ready.
+**Yes — a single-container, multi-host, self-migratable relay is achievable, but ONLY after correcting one fatal architecture error the lenses all shared.** The headline shape: **one Node 22 process = one logical relay owning N workers, where each worker is an isolated `worker_threads` SDK context (`parallelThreads:true`), serialized by a per-*physical-tz1* promise-chain mutex, backed by a durable `better-sqlite3` work-queue written *before* every HTTP 2xx, with boot re-hydration and counter-pinned reconcile-on-restart, in-process `ws` fan-out, and an in-queue gas-refill.** The lenses' unanimous "per-worker mutex in `parallelThreads:false` is stronger than SQS FIFO" claim is **false and fatal**: verified in the reference SDK, direct mode aliased *every* worker instance to one process-global singleton that was overwritten per-op — so two workers proving concurrently corrupt each other's spending key. The fix is non-negotiable: **`parallelThreads:true`** for real per-thread isolation, which forces an **honest RAM model** (a worker thread active in the reaper window holds ~1.2–1.5 GB resident) and makes `MAX_CONCURRENT_PROOFS` a CPU/RAM-pressure cap, *not* a memory-magic decoupler. With that plus the red-teams' accepted fixes — **counter-pin-before-send reconcile**, **mutex keyed on physical tz1**, **single-transaction `jobs`↔`work_queue` coupling**, **`not_found` kept in the wire status set**, and **a live-prod conformance transcript as the migration gate** — the design matches or beats the AWS baseline and is build-ready.
 
 ---
 
@@ -48,7 +50,7 @@
 | Durable queue | **SQLite `work_queue` table** (no broker) | The durable row *is* the SQS message; re-hydrated on boot. Redis/NATS would break the single-image goal. |
 | In-mem serialization | **Per-physical-tz1 promise-chain mutex** (`Map<poolIndex, Promise>`) | *Red-team fix:* key on physical tz1, not role-index, so one tz1 serving two roles + gas-refill can't race. |
 | WS | **`ws`** with `Map<jobId, Set<WebSocket>>`, persist-then-broadcast | In-process fan-out; no Connections table. |
-| Container | **Single multi-arch image (`buildx` amd64+arm64), `node:22-bookworm-slim`, params baked** | Glibc base for `better-sqlite3` prebuilds; baked ~52 MB z.cash params → offline/Akash-ready (`file://` verified `saplingCore.js:73-74`). |
+| Container | **Single multi-arch image (`buildx` amd64+arm64), `node:22-bookworm-slim`, params baked** | Glibc base for `better-sqlite3` prebuilds; baked ~52 MB z.cash params → offline/Akash-ready. |
 | CLI | **`commander`** — `init / start / doctor / keys / jobs` | One binary replaces `setup-secrets.sh` + `InitializePool`; `doctor` = the <30-min DX guarantee. |
 | Config | **One `zod` schema, parsed once at boot, fail-fast** | Kills env drift; the only module reading `process.env`. |
 | Logging | **`pino` JSON + hard redaction allowlist** | Blocks mnemonic/secret/jobSecret/tx-hex/`paymentTxHash`; no client IP by default. |
@@ -60,7 +62,7 @@
 
 ## 3. Concrete Repo File Tree
 
-`[lifted]` = re-implemented from verified Lambda source (NOT imported); `[new]` = net-new for the container.
+`[lifted]` = re-implemented from the reference relay's behavior (NOT imported); `[new]` = net-new for the container.
 
 ```
 shield-relay/
@@ -133,7 +135,7 @@ alert_outbox(id TEXT PRIMARY KEY, payloadJson TEXT, attempts INT, nextAttemptAt 
 
 **Phase 1 — submit-payment → 202:** verify jobSecret (timingSafeEqual; wrong rejected regardless of `REQUIRE_JOB_SECRET`) → **ONE SQLite txn**: conditional `UPDATE jobs SET status='queued'` **AND** `INSERT work_queue(kind='inject_payment', poolIndex=paymentPoolIndex, chainSeq=next(...))` → COMMIT → **only then** `enqueue()` in memory → return 202. *Durable-then-return: crash between COMMIT and enqueue → rehydration; crash before COMMIT → no 2xx, client retries safely.*
 
-**Phase 1 execution (inside the tz1 chain):** read tz1 counter → **persist `pinnedCounter` + `broadcastState='broadcasting'` BEFORE `.send()`** → `.send()`, capture `op.opHash` synchronously (Taquito populates pre-confirmation, verified `index.js:824`) → **persist `broadcast,opHash` BEFORE `confirmation(2)`** → `confirmation(2)` → verify memo via `getShieldedTransactions()` comparing **INTEGER mutez** (`BigInt(receiptValueMutez) >= expectedMutez`) → `INSERT consumed_memos(memo)` (fails-on-dup = credit-once) → **one txn**: `jobs.status='payment_confirmed'` + `work_queue.state='done'` → persist-then-fanout WS.
+**Phase 1 execution (inside the tz1 chain):** read tz1 counter → **persist `pinnedCounter` + `broadcastState='broadcasting'` BEFORE `.send()`** → `.send()`, capture `op.opHash` synchronously (Taquito populates it pre-confirmation) → **persist `broadcast,opHash` BEFORE `confirmation(2)`** → `confirmation(2)` → verify memo via `getShieldedTransactions()` comparing **INTEGER mutez** (`BigInt(receiptValueMutez) >= expectedMutez`) → `INSERT consumed_memos(memo)` (fails-on-dup = credit-once) → **one txn**: `jobs.status='payment_confirmed'` + `work_queue.state='done'` → persist-then-fanout WS.
 
 **Phase 2 — submit-user-transaction → 200** (only after `payment_confirmed`): jobSecret check → **ONE txn**: gate on `status='payment_confirmed'` (else 409), `UPDATE status='injecting_user_tx'` + `INSERT work_queue(kind='inject_user_tx', poolIndex=broadcastPoolIndex,…)` → COMMIT → enqueue → 200. In chain: persist `pinnedCounter+broadcasting` BEFORE `.send()` → capture opHash → persist `broadcast` → `confirmation(1)` → one txn `completed`+`done`.
 
@@ -201,7 +203,7 @@ alert_outbox(id TEXT PRIMARY KEY, payloadJson TEXT, attempts INT, nextAttemptAt 
 
 ## 8. Definition of Done for Self-Migration
 
-Point `shieldbridge.xyz` at this instead of Lambda when ALL are green:
+Point `shieldbridge.xyz` at this instead of the reference serverless relay when ALL are green:
 - [ ] **Live-prod conformance transcript passes** — a byte-level transcript captured from the **running prod relay** replays identically against the container (freeze the real wire, incl. jobSecret + distinct broadcast worker that are live on mainnet).
 - [ ] **Cross-worker isolation test passes against the REAL SDK** (two threads prove+sign concurrently, no key bleed) — until green, the reliability story is unproven.
 - [ ] **Chaos suite on shadownet:** `kill -9` in the send()→commit gap for P1, P2, AND gas-refill (and mid-confirmation) → no double-broadcast, no counter desync/stall, no stranded paid job, memo-consume-once intact.
@@ -210,7 +212,7 @@ Point `shieldbridge.xyz` at this instead of Lambda when ALL are green:
 - [ ] E2E shadownet: live web client completes a relayed **transfer AND batch** unchanged, incl. WS reconnect/replay during a real 10–60s proof.
 - [ ] Single-instance lock proven cross-host; `consumed_memos` off-box backup + boot integrity check; alert outbox survives a webhook outage; grace ≥ drain CI-checked in every template.
 
-**Posture:** build → run **beside** Lambda against shadownet + a mainnet shadow → migrate only after transcript + chaos gates are green.
+**Posture:** build → run **beside** the reference relay against shadownet + a mainnet shadow → migrate only after transcript + chaos gates are green.
 
 ---
 
@@ -226,7 +228,7 @@ Point `shieldbridge.xyz` at this instead of Lambda when ALL are green:
 ## 10. Key Open Decisions for the Owner
 
 1. ~~Phase-0 baseline contradiction~~ — **resolved:** the flag was the v3 checkout lacking the Phase 0 backend merge; Phase 0 is live + enforced on mainnet (verified). Action that *remains*: capture the live-prod transcript as the migration reference (don't freeze from a checkout).
-2. **Concurrency model (BLOCKING before scaffolding):** accept **`parallelThreads:true` (N isolated threads)** as default? Alternatives: global-single-proof-mutex (low RAM, no parallelism — the "stronger than SQS" framing evaporates) or N independent single-worker *processes* (Path A — matches Lambda's proven per-process isolation). Blueprint picks threads.
+2. **Concurrency model (BLOCKING before scaffolding):** accept **`parallelThreads:true` (N isolated threads)** as default? Alternatives: global-single-proof-mutex (low RAM, no parallelism — the "stronger than SQS" framing evaporates) or N independent single-worker *processes* (Path A — matches the reference relay's proven per-process isolation). Blueprint picks threads.
 3. **Homelab default `WORKER_COUNT`:** 1 (2–4 GB box true, smallest anon set) vs 2 — sets the README promise.
 4. **Float-cap/sweep:** ship parity default (unshield-entire-to-own-tz1) with opt-in sweep — confirm, and whether a cold `SWEEP_ADDRESS` is required or same-tz1 accumulation is allowed (loud warning).
 5. **Postgres adapter in P1 or deferred?** Shipping now lets k8s/networked-FS operators start on the supported networked-storage path, but risks implying multi-instance HA (not supported until advisory-lock leasing).
