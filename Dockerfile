@@ -76,10 +76,12 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       python3 build-essential ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
+# NB: do NOT `npm cache clean` here — /root/.npm is a BuildKit cache mount (never part
+# of the image, so cleaning saves nothing) and is SHARED across the parallel amd64/arm64
+# stages, so a wholesale rmdir races a concurrent writer and dies with ENOTEMPTY.
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --omit=dev \
- && test -f node_modules/better-sqlite3/build/Release/better_sqlite3.node \
- && npm cache clean --force
+ && test -f node_modules/better-sqlite3/build/Release/better_sqlite3.node
 
 # -----------------------------------------------------------------------------
 # Stage 3 — runtime: slim, non-root, tini PID-1, no toolchain
