@@ -267,17 +267,16 @@ send `txCount`. The v3 client hardcodes `RELAY_FEE_XTZ = 1`
    with a "please update" message. This converts the silent *relay* loss into an
    explicit, harmless error for the rare large-batch legacy user. **No existing user
    pays more than they do today.**
-3. **Clients adopt the quote.** shield-bridge changes, in order:
-   - read `paymentAmount` from the `get-worker-info` response instead of the
-     hardcoded constant (the response field already exists — today's clients
-     just ignore it in favor of the constant);
-   - send `txCount` (single ops send 1; `useBatch` knows its valid-item count);
-   - surface the quoted fee in the existing fee rows (Bridge single-form fee
-     row, batch cart fee row, ScanToPay "Via" row) — all three currently
-     render the `RELAY_FEE_XTZ` constant, so this is a presentation swap, not
-     new UI;
-   - use `feeSchedule` from the descriptor for the pre-submit preview while
-     building a batch (live "Relay fee: 0.75 XTZ" as rows are added).
+3. **Clients adopt the quote.** A conforming client, in order:
+   - reads `paymentAmount` from the `get-worker-info` response instead of a
+     hardcoded fee constant (the response field already exists; legacy clients
+     just ignore it);
+   - sends `txCount` (single ops send 1; a batch sends its item count);
+   - surfaces the quoted fee wherever it renders the relay fee today (a
+     presentation swap, not new UI);
+   - uses `feeSchedule` from the relay's descriptor for a live pre-submit
+     preview while a user builds a batch (e.g. "Relay fee: 0.75 XTZ" as items
+     are added).
 4. **Eventually** drop `LEGACY_FLAT_MAX_TXS` once flat-fee client traffic is
    gone (observable: jobs with `legacyQuote = true` per week → 0).
 
