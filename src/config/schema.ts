@@ -77,6 +77,10 @@ export const ConfigSchema = z
       .int()
       .positive()
       .default(6 * 60 * 60 * 1000),
+    // The watchdog is edge-triggered (one alert when a worker first crosses below
+    // LOW_BALANCE_XTZ, an info log on recovery). A *still*-low worker re-alerts at most
+    // once per this window so a persistently-low balance doesn't repeat every check.
+    LOW_BALANCE_REALERT_MS: z.coerce.number().int().positive().default(24 * 60 * 60 * 1000),
 
     JOB_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
 
