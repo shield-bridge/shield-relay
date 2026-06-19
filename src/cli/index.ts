@@ -6,6 +6,7 @@ import { init } from './init.js';
 import { doctor } from './doctor.js';
 import { relayStatus } from './status.js';
 import { jobsList, jobsShow, jobsRetry, jobsDiscard } from './jobs.js';
+import { registryRegister, registryUpdate, registryDeregister, registryWithdraw, registryShow } from './registry.js';
 
 const program = new Command();
 program
@@ -116,5 +117,44 @@ jobs
   .option('--dry-run', 'preview only')
   .option('--json', 'machine-readable output')
   .action((id, opts) => guard(() => jobsDiscard(id, opts)));
+
+// `relay registry` — list this relay in the on-chain directory so clients can discover it.
+// All subcommands sign from worker 0 (it needs gas; register also locks the refundable deposit).
+const registry = program.command('registry').description('Manage this relay’s on-chain registry listing');
+const guardAsync = async (fn: () => Promise<void>): Promise<void> => {
+  try {
+    await fn();
+  } catch (e) {
+    console.error('✗', e instanceof Error ? e.message : e);
+    process.exit(1);
+  }
+};
+
+registry
+  .command('register')
+  .description('List the relay: bind its worker tz1s + descriptor URL and lock the refundable deposit')
+  .option('--url <https-origin>', 'public descriptor URL (defaults to RELAY_PUBLIC_URL)')
+  .action((opts) => guardAsync(() => registryRegister(opts)));
+
+registry
+  .command('update')
+  .description('Change only the descriptor URL (worker keys are immutable — re-register to rotate)')
+  .option('--url <https-origin>', 'new descriptor URL (defaults to RELAY_PUBLIC_URL)')
+  .action((opts) => guardAsync(() => registryUpdate(opts)));
+
+registry
+  .command('deregister')
+  .description('Stop being discovered immediately; starts the unbond timer before you can withdraw')
+  .action(() => guardAsync(() => registryDeregister()));
+
+registry
+  .command('withdraw')
+  .description('Refund the deposit and free the entry (only valid after the unbond period)')
+  .action(() => guardAsync(() => registryWithdraw()));
+
+registry
+  .command('show')
+  .description('Print this operator’s current registry entry — read-only')
+  .action(() => guardAsync(() => registryShow()));
 
 await program.parseAsync(process.argv);

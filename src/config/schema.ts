@@ -25,6 +25,14 @@ const DEFAULT_RPC: Record<(typeof NETWORKS)[number], string> = {
   shadownet: 'https://tezos-shadownet.octez.io',
 };
 
+/** On-chain relay registry per network (sapling-contracts RELAY_REGISTRY.md). `relay registry
+ *  register` locks the refundable min_deposit from the operator key. Mirrors shield-bridge's
+ *  RELAY_REGISTRY_CONFIG so a relay lists itself in the same directory clients read. */
+const DEFAULT_REGISTRY: Record<(typeof NETWORKS)[number], { contract: string; minDepositMutez: bigint }> = {
+  mainnet: { contract: 'KT1AsHxHLTBLofmBJAVHVRVRxYdghaRCJcRk', minDepositMutez: 5_000_000n },
+  shadownet: { contract: 'KT1PvhGAz7zfxiNC5KMYRXnDjbb9paEyJYNx', minDepositMutez: 5_000_000n },
+};
+
 export const ConfigSchema = z
   .object({
     TEZOS_NETWORK: z.enum(NETWORKS).default('mainnet'),
@@ -41,15 +49,20 @@ export const ConfigSchema = z
     FEE_QUANTUM_MUTEZ: z.coerce.bigint().positive().default(1n),
     LEGACY_FLAT_MAX_TXS: z.coerce.number().int().nonnegative().default(0), // 0 = no cap
 
-    // Default 2 so Phase-1 payment and Phase-2 broadcast run on DISTINCT tz1
-    // addresses (the two-worker unlinkability property). With 1 worker both phases
-    // collapse onto one tz1, making the public fee receipt pairable with the user op.
+    // Each job is handled end-to-end by ONE worker — both phases share a tz1 (see processor.ts
+    // "COUPLED phases"), so the fee a worker receives self-funds the gas it spends. >1 worker
+    // therefore buys PARALLELISM (N concurrent jobs), not unlinkability; 2 is a sane default.
     WORKER_COUNT: z.coerce.number().int().positive().default(2),
     REQUIRE_JOB_SECRET: bool.default('true'),
 
     // Secrets — exactly one source must resolve (validated in pool loading).
     POOL_FILE: z.string().optional(),
     POOL_JSON: z.string().optional(),
+
+    // Public https origin serving /info + /.well-known/shield-relay.json. Used ONLY by
+    // `relay registry register/update` as the descriptor_url others discover you by.
+    RELAY_PUBLIC_URL: z.string().url().optional(),
+    RELAY_REGISTRY_CONTRACT: z.string().optional(), // override the per-network registry KT1
 
     DATA_DIR: z.string().default('./data'),
 
@@ -93,6 +106,9 @@ export const ConfigSchema = z
     rpcUrl: c.TEZOS_RPC_URL ?? DEFAULT_RPC[c.TEZOS_NETWORK],
     factoryContract:
       c.SHIELD_BRIDGE_CONTRACT ?? DEFAULT_FACTORY[c.TEZOS_NETWORK],
+    registryContract:
+      c.RELAY_REGISTRY_CONTRACT ?? DEFAULT_REGISTRY[c.TEZOS_NETWORK].contract,
+    registryMinDepositMutez: DEFAULT_REGISTRY[c.TEZOS_NETWORK].minDepositMutez,
     // Fee schedule params, grouped. base defaults to the flat amount → dark by default.
     fee: {
       baseMutez: c.FEE_BASE_MUTEZ ?? c.PAYMENT_AMOUNT_MUTEZ,

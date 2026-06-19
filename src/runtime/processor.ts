@@ -65,8 +65,17 @@ export class Processor {
   getWorkerInfo(txCountRaw?: unknown) {
     const txCount = this.parseTxCount(txCountRaw);
     const n = this.d.workers.length;
+    // COUPLED phases: one worker both receives the fee (Phase 1) and broadcasts the user's op
+    // (Phase 2). This is deliberate. The distinct-worker alternative unlinks the fee-payment from
+    // the broadcast on-chain, but it makes the fee land on tz1 A while gas is spent from tz1 B, so
+    // worker balances DRIFT (payment workers fatten, broadcast workers starve) and a broadcast
+    // worker that runs dry mid-burst fails live jobs — the "balance problem". Coupling makes each
+    // job SELF-FUNDING (fee in, gas out, same tz1, net-positive), which is what lets a single
+    // container run unattended. The user's wallet is hidden either way (the relay broadcasts, not
+    // the user); what we give up is traffic-analysis resistance on the relay's OWN ops. Multiple
+    // workers still run distinct JOBS in parallel — only the two phases of one job share a tz1.
     const paymentPoolIndex = randomInt(n);
-    const broadcastPoolIndex = n > 1 ? (paymentPoolIndex + 1 + randomInt(n - 1)) % n : paymentPoolIndex;
+    const broadcastPoolIndex = paymentPoolIndex;
 
     const jobId = `job-${randomUUID()}`;
     // Vestigial per-job token. The unshield-payment protocol uses NO memo (an unshield

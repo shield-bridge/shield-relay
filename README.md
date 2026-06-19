@@ -29,7 +29,27 @@ docker compose up -d
 docker compose exec relay relay doctor   # checks RPC, contract, balances, DB
 ```
 
-Then set `VITE_API_BASE_URL` in the Shield Bridge app to your relay's URL — status is delivered by polling `GET /status`, so there is no WebSocket endpoint to configure. (Later, register the relay so others can discover it.)
+Then set `VITE_API_BASE_URL` in the Shield Bridge app to your relay's URL — status is delivered by polling `GET /status`, so there is no WebSocket endpoint to configure. To let *anyone* discover your relay (not just you), [list it in the on-chain registry](#listing-your-relay-on-chain).
+
+## Listing your relay on-chain
+
+A Shield Bridge client finds relays by reading a permissionless [on-chain registry](https://github.com/AndrewKishino/sapling-contracts/blob/main/RELAY_REGISTRY.md) — no central server, no allowlist. Registering is one command:
+
+```bash
+export RELAY_PUBLIC_URL=https://relay.example.com   # your public https origin (serves /info + /.well-known/shield-relay.json)
+relay registry register                              # or: --url https://relay.example.com
+```
+
+It reads your pool, binds the worker tz1s, and locks a **refundable 5 XTZ deposit** signed from **worker 0** (so that key needs the deposit **plus** gas). Other clients discover you on their next registry read. The registry stores only *who/where* you are (operator, worker tz1s, descriptor URL) — never reputation; clients judge reliability themselves from their own experience.
+
+Manage the listing:
+
+```bash
+relay registry show          # your current entry (or "not registered")
+relay registry update --url https://new.example.com   # change only the URL (worker keys are immutable)
+relay registry deregister    # stop being discovered now; starts a 3-day unbond timer
+relay registry withdraw      # after the unbond period: refund the deposit + free the entry
+```
 
 ## Build & run from source
 
@@ -57,7 +77,7 @@ The container image is published to `ghcr.io/andrewkishino/shield-relay` on tagg
 ## How it works (two-phase)
 
 1. **Payment** — the user unshields the fee to one of your workers' public tz1. Your relay **simulates the op first and broadcasts it only if it actually pays that worker** (≥ the fee) — so it never broadcasts an operation that doesn't pay it, and never spends gas on a hijack attempt.
-2. **Broadcast** — only *after* payment confirms, the user submits their real (still-opaque) operation, which a **different** worker broadcasts. The two on-chain ops come from different addresses, so they can't be trivially paired.
+2. **Broadcast** — only *after* payment confirms, the user submits their real (still-opaque) operation, which the **same worker** broadcasts. Coupling both phases on one tz1 keeps each job self-funding (the fee it just received covers the gas it spends), so a single container runs unattended with no cross-worker balance drift. Your wallet is hidden either way — the relay broadcasts, not you; what's traded is on-chain unlinkability of the relay's *own* fee-vs-broadcast ops, which doesn't expose the user. (Multiple workers still process distinct jobs in parallel.)
 
 For the byte-level contract — every endpoint, request/response shape, status code, the job state machine, and the fee schedule — see the full [**`shield-relay/1` wire-protocol spec**](./docs/SHIELD_RELAY_PROTOCOL.md).
 
