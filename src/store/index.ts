@@ -133,7 +133,7 @@ export interface Store {
    */
   tryConsumePaymentDigest(digest: string, jobId: string): boolean;
 
-  // ── work queue (durable inbound queue; the "SQS message") ────────────────────
+  // ── work queue (the durable inbound queue) ───────────────────────────────────
   /**
    * Atomically advance a job's status AND insert a work item in ONE transaction,
    * but only if the job is currently in `expectedStatus`. Returns the assigned

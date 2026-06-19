@@ -18,8 +18,8 @@ import type {
 
 /**
  * The canonical schema. The in-memory WorkerQueue is a cache over `work_queue`;
- * this table IS the durable "SQS message". `consumed_payments` is the permanent,
- * never-swept replay guard (UNIQUE(digest) == DynamoDB attribute_not_exists).
+ * that table is the durable queue. `consumed_payments` is the permanent,
+ * never-swept replay guard — a UNIQUE(digest) insert credits each payment once.
  */
 const DDL = `
 CREATE TABLE IF NOT EXISTS jobs (

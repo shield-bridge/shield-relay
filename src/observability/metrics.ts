@@ -1,10 +1,10 @@
 import { Registry, Counter, Gauge, Histogram, collectDefaultMetrics } from 'prom-client';
 
 /**
- * Prometheus metrics — the cloud-agnostic replacement for the AWS CloudWatch
- * alarms. The four series map to the operator's real questions: is a worker
- * stalled (queue depth), are we earning + solvent (gas balance), how slow is
- * proving (broadcast duration), and is anyone replaying (payment rejections).
+ * Prometheus metrics — operator-facing health series. They map to the operator's
+ * real questions: is a worker stalled (queue depth), are we earning + solvent
+ * (gas balance), how slow is broadcasting (broadcast duration), and is anyone
+ * replaying (payment rejections).
  */
 export class Metrics {
   readonly registry = new Registry();

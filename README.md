@@ -2,7 +2,7 @@
 
 > Self-hostable **privacy relay** for [Shield Bridge](https://shieldbridge.xyz). Broadcasts Tezos **Sapling** transactions on a user's behalf for a small fee — anonymously. One container. Run it anywhere: a VPS, a homelab, Fly.io, Railway, Kubernetes, Akash.
 
-**Status:** 🚧 early scaffold. The wire protocol (`shield-relay/1`) is frozen and live in production on Shield Bridge's AWS backend; this repo re-implements it as a **single portable container** so anyone can run a relay. See [`docs/SHIELD_RELAY_PROTOCOL.md`](./docs/SHIELD_RELAY_PROTOCOL.md) for the complete wire-protocol specification (endpoints, envelopes, status codes, fee schedule) and [`DESIGN.md`](./DESIGN.md) for the architecture. It builds, runs, and passes its unit tests, but has **not** yet cleared the production-migration gates (`DESIGN.md` §8) — treat it as a scaffold and try it on shadownet or low-value flows first.
+**Status:** 🚧 early. The wire protocol (`shield-relay/1`) is frozen; this is a **single portable container** that implements it so anyone can run a relay. See [`docs/SHIELD_RELAY_PROTOCOL.md`](./docs/SHIELD_RELAY_PROTOCOL.md) for the complete wire-protocol specification (endpoints, envelopes, status codes, fee schedule) and [`DESIGN.md`](./DESIGN.md) for the architecture. It builds, runs, and passes its tests — try it on shadownet or low-value flows first.
 
 ---
 
@@ -72,7 +72,7 @@ The container image is published to `ghcr.io/andrewkishino/shield-relay` on tagg
 
 - **Earn fees** for providing a useful privacy service (fees self-fund the gas).
 - **Strengthen the network** — more independent relays = more censorship-resistance and operator diversity.
-- **Sovereignty** — no AWS account, no cloud lock-in; runs on hardware you control.
+- **Sovereignty** — no cloud account, no lock-in; runs on hardware you control.
 
 ## How it works (two-phase)
 

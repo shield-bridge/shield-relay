@@ -6,10 +6,9 @@
  * Phase-1 payment injection and Phase-2 broadcast (when that tz1 is the broadcast
  * worker) — MUST be enqueued here on that worker's poolIndex.
  *
- * Because a single process owns all workers, this is a strictly stronger
- * guarantee than the AWS SQS-FIFO MessageGroupId=worker-N: there is no
- * cross-process race window, so two ops can never concurrently select the same
- * notes or reuse the same counter (the double-spend the chain rejects).
+ * Because a single process owns all workers, serialization is purely in-process:
+ * there is no cross-process race window, so two ops can never concurrently select
+ * the same notes or reuse the same counter (the double-spend the chain rejects).
  *
  * Keyed on the PHYSICAL tz1 (pool index), NOT a payment/broadcast role — so a
  * single tz1 serving as one job's payment worker and another's broadcast worker

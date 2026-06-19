@@ -4,7 +4,7 @@
 
 **Protocol identifier:** `shield-relay/1`
 
-**Status:** *Frozen wire.* This document specifies the on-the-wire contract — endpoints, envelopes, status codes, field names, and shapes — that any conforming client or server must honor. There are two known server implementations: this self-hostable container relay (the reference implementation described here) and an AWS serverless relay. Both speak `shield-relay/1`. **The code in this repository is the source of truth**; where this document and the code disagree, the code wins.
+**Status:** *Frozen wire.* This document specifies the on-the-wire contract — endpoints, envelopes, status codes, field names, and shapes — that any conforming client or server must honor. This repository is the **reference implementation**; any client or server that honors this contract interoperates. **The code in this repository is the source of truth**; where this document and the code disagree, the code wins.
 
 ---
 
