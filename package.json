@@ -7,10 +7,10 @@
   "author": "Andrew Kishino",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AndrewKishino/shield-relay.git"
+    "url": "git+https://github.com/shield-bridge/shield-relay.git"
   },
-  "homepage": "https://github.com/AndrewKishino/shield-relay#readme",
-  "bugs": "https://github.com/AndrewKishino/shield-relay/issues",
+  "homepage": "https://github.com/shield-bridge/shield-relay#readme",
+  "bugs": "https://github.com/shield-bridge/shield-relay/issues",
   "type": "module",
   "engines": {
     "node": ">=22"

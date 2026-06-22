@@ -1,7 +1,7 @@
 # Build + publish the multi-arch shield-relay image to GHCR.
 #
 # Pushes linux/amd64 + linux/arm64 under a single manifest list so
-# `docker pull ghcr.io/andrewkishino/shield-relay` resolves the right arch
+# `docker pull ghcr.io/shield-bridge/shield-relay` resolves the right arch
 # automatically. Native compiles are NOT on the critical path: the only native
 # addon (better-sqlite3) ships glibc prebuilds for node-v127 on both arches, and
 # the Sapling proving core is WebAssembly (arch-independent) — so the amd64 leg
@@ -16,7 +16,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ${{ github.repository }} # andrewkishino/shield-relay
+  IMAGE: ${{ github.repository }} # shield-bridge/shield-relay
 
 permissions:
   contents: read

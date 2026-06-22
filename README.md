@@ -19,7 +19,7 @@ This server speaks the exact protocol the Shield Bridge web app already uses, so
 ```bash
 # 1. mint your worker pool + print the addresses you need to fund
 #    (--out writes ./secrets/pool.json on the host — the path compose mounts read-only)
-docker run --rm -v "$PWD/secrets:/secrets" ghcr.io/andrewkishino/shield-relay \
+docker run --rm -v "$PWD/secrets:/secrets" ghcr.io/shield-bridge/shield-relay \
   relay init --workers 2 --out /secrets/pool.json
 
 # 2. fund each printed tz1 address with ~5–10 XTZ for gas (one-time; fees self-fund afterward)
@@ -33,7 +33,7 @@ Then set `VITE_API_BASE_URL` in the Shield Bridge app to your relay's URL — st
 
 ## Listing your relay on-chain
 
-A Shield Bridge client finds relays by reading a permissionless [on-chain registry](https://github.com/AndrewKishino/sapling-contracts/blob/main/RELAY_REGISTRY.md) — no central server, no allowlist. Registering is one command:
+A Shield Bridge client finds relays by reading a permissionless [on-chain registry](https://github.com/shield-bridge/sapling-contracts/blob/main/RELAY_REGISTRY.md) — no central server, no allowlist. Registering is one command:
 
 ```bash
 export RELAY_PUBLIC_URL=https://relay.example.com   # your public https origin (serves /info + /.well-known/shield-relay.json)
@@ -56,7 +56,7 @@ relay registry withdraw      # after the unbond period: refund the deposit + fre
 No Docker required — Node 22+ and npm:
 
 ```bash
-git clone https://github.com/AndrewKishino/shield-relay && cd shield-relay
+git clone https://github.com/shield-bridge/shield-relay && cd shield-relay
 npm ci
 npm run build && npm test          # compile + run the test suite
 cp .env.example .env               # then edit .env (at minimum TEZOS_NETWORK)
@@ -66,7 +66,7 @@ node dist/cli/index.js doctor      # preflight: RPC, contract, balances, DB, por
 node dist/cli/index.js start       # or: npm start
 ```
 
-The container image is published to `ghcr.io/andrewkishino/shield-relay` on tagged releases; if a `docker pull` 404s, build it locally with `docker build -t shield-relay .`.
+The container image is published to `ghcr.io/shield-bridge/shield-relay` on tagged releases; if a `docker pull` 404s, build it locally with `docker build -t shield-relay .`.
 
 ## Why run one?
 

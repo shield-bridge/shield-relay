@@ -24,3 +24,7 @@ params/
 *.log
 .DS_Store
 coverage/
+
+# Local one-time operator tools (not part of the published relay)
+scripts/register-serverless-relay.mjs
+scripts/keys-to-addresses.mjs

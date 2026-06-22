@@ -13,9 +13,9 @@
 
 services:
   relay:
-    image: ${RELAY_IMAGE:-ghcr.io/andrewkishino/shield-relay:latest}
+    image: ${RELAY_IMAGE:-ghcr.io/shield-bridge/shield-relay:latest}
     # Pin to a digest in production for reproducibility, e.g.:
-    #   RELAY_IMAGE=ghcr.io/andrewkishino/shield-relay@sha256:<digest>
+    #   RELAY_IMAGE=ghcr.io/shield-bridge/shield-relay@sha256:<digest>
     container_name: shield-relay
     restart: unless-stopped
 

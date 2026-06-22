@@ -20,7 +20,7 @@ welcome.
 Requires **Node 22+** and npm.
 
 ```bash
-git clone https://github.com/AndrewKishino/shield-relay && cd shield-relay
+git clone https://github.com/shield-bridge/shield-relay && cd shield-relay
 npm ci
 npm run build       # tsc -> dist/
 npm test            # vitest (must pass before you open a PR)
